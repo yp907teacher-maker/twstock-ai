@@ -48,7 +48,7 @@ with TestClient(app) as c:
         "screener": {grp: g(f"/api/screener?group={grp}&include_ineligible=true&limit=5000")
                      for grp in ("stock", "etf", "etf_leveraged")},
         "picks": {grp: g(f"/api/picks?group={grp}") for grp in ("stock", "etf", "etf_leveraged")},
-        "nextday": {grp: g(f"/api/nextday?group={grp}&limit=500&include_ineligible=true") for grp in ("stock", "etf", "etf_leveraged")},
+        "nextday": {grp: g(f"/api/nextday?group={grp}&limit=5000&include_ineligible=true") for grp in ("stock", "etf", "etf_leveraged")},
         "sectors": g("/api/sectors"),
         "models": g("/api/models"),
         "backtests": g("/api/backtests"),

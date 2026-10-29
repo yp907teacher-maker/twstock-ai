@@ -212,7 +212,7 @@ def picks(group: str = "stock", s: Session = Depends(db)):
 
 # ------------------------------------------------------------------ next-day forecast list
 @app.get("/api/nextday")
-def nextday(group: str = "stock", include_ineligible: bool = False, limit: int = Query(50, le=500),
+def nextday(group: str = "stock", include_ineligible: bool = False, limit: int = Query(50, le=5000),
             s: Session = Depends(db)):
     mr = s.scalar(select(ModelRun).where(ModelRun.horizon_days == 1).order_by(ModelRun.id.desc()).limit(1))
     if mr is None:
