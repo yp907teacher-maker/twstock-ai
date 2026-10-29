@@ -230,3 +230,29 @@ ul.signals.risk li { background: var(--warn-soft); border-left: 3px solid var(--
 .label-down { color: var(--warn); font-weight: 600; }
 .pick-foot { display: flex; align-items: center; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; margin-top: auto; flex-wrap: wrap; }
 .pick-foot .spacer { flex: 1; }
+
+.watch-wrap { position: relative; display: inline-flex; gap: 2px; }
+.watch-pop { position: absolute; right: 0; top: 32px; z-index: 50; background: #fff; border: 1px solid var(--line-2); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.12); padding: 10px 12px; width: 230px; text-align: left; }
+.group-tabs { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.group-tab { font: inherit; border: 1px solid var(--line-2); background: #fff; border-radius: 999px; padding: 5px 14px; cursor: pointer; color: var(--ink-2); }
+.group-tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.group-tab .n { opacity: .7; font-size: 12px; margin-left: 4px; }
+
+/* 次日預測信心度 */
+.conf { display: flex; align-items: center; gap: 8px; }
+.conf-track { position: relative; flex: 1; height: 8px; background: #e7ecea; border-radius: 4px; overflow: hidden; min-width: 90px; }
+.conf-track i { position: absolute; left: 0; top: 0; bottom: 0; background: #9bb8b8; }
+.conf-mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: #777; }
+.conf.hi .conf-track i { background: var(--up); }
+.conf.mid .conf-track i { background: #e08b7f; }
+.conf.lo .conf-track i { background: var(--down); }
+.conf b { font-variant-numeric: tabular-nums; width: 40px; text-align: right; }
+.conf.untrusted b { color: var(--muted); }
+.conf.untrusted .conf-track { opacity: .65; }
+/* 類股 */
+.sector-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.sector-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: #fff; }
+.sector-card .spacer { flex: 1; }
+.sector-rets { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
+.sector-rets > div { display: flex; flex-direction: column; align-items: center; border-radius: 6px; padding: 4px 0; background: #f5f4ef; }

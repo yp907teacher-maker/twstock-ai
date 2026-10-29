@@ -34,6 +34,8 @@ from ..models import (
     Prediction,
     Quote,
     ScoreSnapshot,
+    WatchGroup,
+    WatchItem,
     Watchlist,
     utcnow,
 )
@@ -208,6 +210,95 @@ def picks(group: str = "stock", s: Session = Depends(db)):
     return compute_picks(s, group)
 
 
+# ------------------------------------------------------------------ next-day forecast list
+@app.get("/api/nextday")
+def nextday(group: str = "stock", include_ineligible: bool = False, limit: int = Query(50, le=500),
+            s: Session = Depends(db)):
+    mr = s.scalar(select(ModelRun).where(ModelRun.horizon_days == 1).order_by(ModelRun.id.desc()).limit(1))
+    if mr is None:
+        return {"model": None, "rows": [], "note": "尚未訓練次日模型（需先有足夠歷史資料並執行重新計算）"}
+    as_of = s.scalar(select(func.max(Prediction.as_of_date)).where(Prediction.model_run_id == mr.id))
+    q = (select(Prediction, Instrument, ScoreSnapshot)
+         .join(Instrument, Instrument.instrument_id == Prediction.instrument_id)
+         .outerjoin(ScoreSnapshot, and_(ScoreSnapshot.instrument_id == Prediction.instrument_id,
+                                        ScoreSnapshot.as_of_date == Prediction.as_of_date))
+         .where(Prediction.model_run_id == mr.id, Prediction.as_of_date == as_of, Prediction.horizon_days == 1))
+    rows = []
+    for p, inst, sc in s.execute(q).all():
+        if inst.group != group:
+            continue
+        if not include_ineligible and (sc is None or not sc.eligible):
+            continue
+        rows.append({**inst_dict(inst), "prob_up": p.prob_up, "expected_return": p.expected_return,
+                     "lower": p.lower, "upper": p.upper, "risk_flags": p.risk_flags,
+                     "score": score_dict(sc)})
+    rows.sort(key=lambda r: (r["prob_up"] is not None, r["prob_up"] or 0, r["expected_return"] or 0), reverse=True)
+    pm = (mr.metrics or {}).get("probability", {})
+    tm = (mr.metrics or {}).get("test", {})
+    return {
+        "as_of_date": str(as_of) if as_of else None,
+        "model": {"id": mr.id, "version": mr.model_version, "beats_baseline": mr.beats_baseline,
+                  "prob_calibrated": mr.prob_calibrated, "test_period": [str(mr.test_start), str(mr.test_end)],
+                  "brier": pm.get("brier"), "brier_baseline": pm.get("brier_baseline"), "ece": pm.get("ece"),
+                  "top_decile_hit": pm.get("top_decile_hit"), "top_decile_mean_return": pm.get("top_decile_mean_return"),
+                  "test_up_rate": pm.get("test_up_rate"), "hit_rate": tm.get("model", {}).get("hit_rate"),
+                  "reliability": pm.get("reliability", [])},
+        "rows": rows[:limit], "total_rows": len(rows),
+        "note": "信心度 = 模型估計「下一個交易日收盤高於今日收盤」的機率（經歷史資料校準）。50% 代表沒有方向優勢；短期股價隨機性很高，請搭配風險自行判斷。",
+    }
+
+
+# ------------------------------------------------------------------ sector performance
+@app.get("/api/sectors")
+def sectors(s: Session = Depends(db)):
+    sd = latest_score_date(s)
+    if sd is None:
+        return {"as_of_date": None, "rows": []}
+    prev = s.scalar(select(func.max(DailyPrice.trade_date)).where(DailyPrice.trade_date < sd))
+    px = dict(((iid, (c, f)) for iid, c, f in s.execute(
+        select(DailyPrice.instrument_id, DailyPrice.close, DailyPrice.adj_factor).where(DailyPrice.trade_date == sd))))
+    ppx = dict(((iid, (c, f)) for iid, c, f in s.execute(
+        select(DailyPrice.instrument_id, DailyPrice.close, DailyPrice.adj_factor).where(DailyPrice.trade_date == prev)))) if prev else {}
+    turn = dict(s.execute(select(DailyPrice.instrument_id, DailyPrice.turnover).where(DailyPrice.trade_date == sd)).all())
+    q = (select(Instrument, ScoreSnapshot, FeatureSnapshot)
+         .join(ScoreSnapshot, and_(ScoreSnapshot.instrument_id == Instrument.instrument_id, ScoreSnapshot.as_of_date == sd))
+         .outerjoin(FeatureSnapshot, and_(FeatureSnapshot.instrument_id == Instrument.instrument_id,
+                                          FeatureSnapshot.as_of_date == sd))
+         .where(Instrument.asset_type == "common_stock", Instrument.status == "active"))
+    groups: dict[str, list] = {}
+    for inst, sc, fs in s.execute(q).all():
+        groups.setdefault(inst.industry or "其他", []).append((inst, sc, fs.values if fs else {}))
+
+    def avg(vals):
+        v = [x for x in vals if x is not None]
+        return sum(v) / len(v) if v else None
+
+    out = []
+    for ind, items in groups.items():
+        r1 = []
+        for inst, _, _ in items:
+            a, b = px.get(inst.instrument_id), ppx.get(inst.instrument_id)
+            r1.append(a[0] * a[1] / (b[0] * b[1]) - 1 if a and b and b[0] else None)
+        elig = sorted([(sc.total, inst, sc) for inst, sc, _ in items if sc.eligible and sc.total is not None],
+                      key=lambda x: -x[0])
+        out.append({
+            "industry": ind, "count": len(items),
+            "ret_1": avg(r1), "ret_5": avg([f.get("ret_5") for _, _, f in items]),
+            "ret_20": avg([f.get("ret_20") for _, _, f in items]), "ret_60": avg([f.get("ret_60") for _, _, f in items]),
+            "advancers": sum(1 for x in r1 if x is not None and x > 1e-9),
+            "decliners": sum(1 for x in r1 if x is not None and x < -1e-9),
+            "turnover": sum(turn.get(inst.instrument_id) or 0 for inst, _, _ in items),
+            "avg_score": avg([sc.total for _, sc, _ in items if sc.eligible]),
+            "eligible": len(elig),
+            "leaders": [{"instrument_id": inst.instrument_id, "symbol": inst.symbol, "name": inst.name, "total": t,
+                         "ret_20": next((f.get("ret_20") for i2, _, f in items if i2.instrument_id == inst.instrument_id), None)}
+                        for t, inst, sc in elig[:3]],
+        })
+    out.sort(key=lambda r: -(r["turnover"] or 0))
+    return {"as_of_date": str(sd), "prev_date": str(prev) if prev else None, "rows": out,
+            "note": "類股報酬為該產業普通股的等權平均（還原價）；產業分類來自 FinMind 主檔。"}
+
+
 # ------------------------------------------------------------------ search & screener
 @app.get("/api/instruments/search")
 def search(q: str = Query("", max_length=32), limit: int = 20, s: Session = Depends(db)):
@@ -315,7 +406,7 @@ def instrument_detail(iid: int, s: Session = Depends(db)):
     sc = s.scalar(select(ScoreSnapshot).where(ScoreSnapshot.instrument_id == iid).order_by(ScoreSnapshot.as_of_date.desc()).limit(1))
     fs = s.scalar(select(FeatureSnapshot).where(FeatureSnapshot.instrument_id == iid).order_by(FeatureSnapshot.as_of_date.desc()).limit(1))
     preds = []
-    for h in (20, 60):
+    for h in (1, 20, 60):
         p = s.scalar(select(Prediction).where(Prediction.instrument_id == iid, Prediction.horizon_days == h)
                      .order_by(Prediction.as_of_date.desc(), Prediction.id.desc()).limit(1))
         if p:
@@ -324,7 +415,7 @@ def instrument_detail(iid: int, s: Session = Depends(db)):
             preds.append({
                 "horizon_days": h, "as_of_date": str(p.as_of_date), "generated_at": _iso(p.generated_at),
                 "target_definition": p.target_definition, "expected_return": p.expected_return, "lower": p.lower,
-                "upper": p.upper, "prob_up": p.prob_up, "risk_flags": p.risk_flags,
+                "upper": p.upper, "prob_up": p.prob_up if mr.prob_calibrated else None, "risk_flags": p.risk_flags,
                 "model": {"id": mr.id, "version": mr.model_version, "beats_baseline": mr.beats_baseline,
                           "interval_calibrated": mr.interval_calibrated, "prob_calibrated": mr.prob_calibrated,
                           "status": mr.status, "test_period": [str(mr.test_start), str(mr.test_end)],
@@ -342,7 +433,8 @@ def instrument_detail(iid: int, s: Session = Depends(db)):
     flows = s.scalars(select(Flow).where(Flow.instrument_id == iid).order_by(Flow.trade_date.desc()).limit(60)).all()
     issues = s.scalars(select(DataQualityIssue).where(DataQualityIssue.instrument_id == iid, DataQualityIssue.resolved.is_(False))
                        .order_by(DataQualityIssue.detected_at.desc()).limit(20)).all()
-    wl = s.get(Watchlist, iid)
+    ensure_groups(s)
+    wl_groups = [gid for (gid,) in s.execute(select(WatchItem.group_id).where(WatchItem.instrument_id == iid))]
     quote = s.get(Quote, iid)
     return {
         "instrument": inst_dict(inst),
@@ -365,7 +457,7 @@ def instrument_detail(iid: int, s: Session = Depends(db)):
                    "margin_balance": f.margin_balance} for f in reversed(flows)],
         "quality_issues": [{"id": i.id, "code": i.issue_code, "severity": i.severity, "date": str(i.trade_date) if i.trade_date else None,
                             "details": i.details} for i in issues],
-        "watchlist": {"in": wl is not None, "note": wl.note if wl else ""},
+        "watchlist": {"in": bool(wl_groups), "groups": wl_groups},
         "quote": None if not quote else {"price": quote.price, "change": quote.change, "quote_time": _iso(quote.quote_time),
                                          "is_realtime": quote.is_realtime, "provider": quote.provider,
                                          "retrieved_at": _iso(quote.retrieved_at)},
@@ -424,15 +516,89 @@ def unexclude(iid: int, s: Session = Depends(db)):
 class WatchBody(BaseModel):
     instrument_id: int
     note: str = ""
+    group_id: int | None = None
+
+
+class GroupBody(BaseModel):
+    name: str
+
+
+def ensure_groups(s: Session) -> list[WatchGroup]:
+    """至少有一個清單；舊版單一自選股資料移入「自選一」。"""
+    groups = s.scalars(select(WatchGroup).order_by(WatchGroup.sort, WatchGroup.id)).all()
+    if groups:
+        return list(groups)
+    g = WatchGroup(name="自選一", sort=0)
+    s.add(g)
+    s.flush()
+    for w in s.scalars(select(Watchlist)).all():
+        s.add(WatchItem(group_id=g.id, instrument_id=w.instrument_id, note=w.note, added_at=w.added_at))
+    s.flush()
+    return [g]
+
+
+def _group_or_default(s: Session, gid: int | None) -> WatchGroup:
+    groups = ensure_groups(s)
+    if gid is None:
+        return groups[0]
+    g = s.get(WatchGroup, gid)
+    if g is None:
+        raise HTTPException(404, "找不到此自選清單")
+    return g
+
+
+@app.get("/api/watchlists")
+def watchlists(s: Session = Depends(db)):
+    groups = ensure_groups(s)
+    members: dict[int, list[int]] = {}
+    for gid, iid in s.execute(select(WatchItem.group_id, WatchItem.instrument_id).order_by(WatchItem.added_at)):
+        members.setdefault(gid, []).append(iid)
+    return [{"id": g.id, "name": g.name, "count": len(members.get(g.id, [])), "instrument_ids": members.get(g.id, [])}
+            for g in groups]
+
+
+@app.post("/api/watchlists")
+def watchlist_create(body: GroupBody, s: Session = Depends(db)):
+    groups = ensure_groups(s)
+    if len(groups) >= 20:
+        raise HTTPException(400, "自選清單最多 20 個")
+    name = body.name.strip()[:32] or f"自選{len(groups) + 1}"
+    g = WatchGroup(name=name, sort=max(x.sort for x in groups) + 1)
+    s.add(g)
+    s.flush()
+    return {"id": g.id, "name": g.name, "count": 0, "instrument_ids": []}
+
+
+@app.patch("/api/watchlists/{gid}")
+def watchlist_rename(gid: int, body: GroupBody, s: Session = Depends(db)):
+    g = _group_or_default(s, gid)
+    if body.name.strip():
+        g.name = body.name.strip()[:32]
+    return {"id": g.id, "name": g.name}
+
+
+@app.delete("/api/watchlists/{gid}")
+def watchlist_delete(gid: int, s: Session = Depends(db)):
+    groups = ensure_groups(s)
+    if len(groups) <= 1:
+        raise HTTPException(400, "至少要保留一個自選清單")
+    g = _group_or_default(s, gid)
+    from sqlalchemy import delete as sql_delete
+
+    s.execute(sql_delete(WatchItem).where(WatchItem.group_id == g.id))
+    s.flush()
+    s.delete(g)
+    return {"ok": True}
 
 
 @app.get("/api/watchlist")
-def watchlist(s: Session = Depends(db)):
+def watchlist(group: int | None = None, s: Session = Depends(db)):
+    g = _group_or_default(s, group)
     sd = latest_score_date(s)
     prev_sd = s.scalar(select(func.max(ScoreSnapshot.as_of_date)).where(ScoreSnapshot.as_of_date < sd)) if sd else None
     out = []
-    for w, inst in s.execute(select(Watchlist, Instrument).join(Instrument, Instrument.instrument_id == Watchlist.instrument_id)
-                             .order_by(Watchlist.added_at)).all():
+    for w, inst in s.execute(select(WatchItem, Instrument).join(Instrument, Instrument.instrument_id == WatchItem.instrument_id)
+                             .where(WatchItem.group_id == g.id).order_by(WatchItem.added_at)).all():
         sc = s.scalar(select(ScoreSnapshot).where(ScoreSnapshot.instrument_id == inst.instrument_id,
                                                   ScoreSnapshot.as_of_date == sd)) if sd else None
         psc = s.scalar(select(ScoreSnapshot).where(ScoreSnapshot.instrument_id == inst.instrument_id,
@@ -445,32 +611,35 @@ def watchlist(s: Session = Depends(db)):
                     "last_price": {"date": str(last_px[0]), "close": last_px[1]} if last_px else None,
                     "quote": None if not q else {"price": q.price, "change": q.change, "quote_time": _iso(q.quote_time),
                                                  "provider": q.provider, "is_realtime": q.is_realtime}})
-    return {"as_of_date": str(sd) if sd else None, "rows": out}
+    return {"as_of_date": str(sd) if sd else None, "group": {"id": g.id, "name": g.name}, "rows": out}
 
 
 @app.post("/api/watchlist")
 def watch_add(body: WatchBody, s: Session = Depends(db)):
     _get_inst(s, body.instrument_id)
-    w = s.get(Watchlist, body.instrument_id)
+    g = _group_or_default(s, body.group_id)
+    w = s.get(WatchItem, (g.id, body.instrument_id))
     if w is None:
-        s.add(Watchlist(instrument_id=body.instrument_id, note=body.note))
-    else:
+        s.add(WatchItem(group_id=g.id, instrument_id=body.instrument_id, note=body.note))
+    elif body.note:
         w.note = body.note
     return {"ok": True}
 
 
 @app.patch("/api/watchlist/{iid}")
-def watch_note(iid: int, body: WatchBody, s: Session = Depends(db)):
-    w = s.get(Watchlist, iid)
+def watch_note(iid: int, body: WatchBody, group: int | None = None, s: Session = Depends(db)):
+    g = _group_or_default(s, group if group is not None else body.group_id)
+    w = s.get(WatchItem, (g.id, iid))
     if w is None:
-        raise HTTPException(404, "不在自選股中")
+        raise HTTPException(404, "不在此自選清單中")
     w.note = body.note
     return {"ok": True}
 
 
 @app.delete("/api/watchlist/{iid}")
-def watch_remove(iid: int, s: Session = Depends(db)):
-    w = s.get(Watchlist, iid)
+def watch_remove(iid: int, group: int | None = None, s: Session = Depends(db)):
+    g = _group_or_default(s, group)
+    w = s.get(WatchItem, (g.id, iid))
     if w:
         s.delete(w)
     return {"ok": True}

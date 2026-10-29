@@ -29,7 +29,6 @@ export default function Screener() {
     value_risk: "",
   });
   const [sort, setSort] = useState<{ k: string; desc: boolean }>({ k: "total", desc: true });
-  const [watch, setWatch] = useState<Record<number, boolean>>({});
 
   const url = useMemo(() => {
     const p = new URLSearchParams({ group, sort: sort.k, desc: String(sort.desc), limit: "300" });
@@ -43,9 +42,6 @@ export default function Screener() {
     return `/api/screener?${p}`;
   }, [group, f, sort]);
   const { data, error, loading } = useApi<any>(url);
-  const wl = useApi<any>("/api/watchlist");
-  const base = useMemo(() => new Set<number>((wl.data?.rows ?? []).map((r: any) => r.instrument_id)), [wl.data]);
-  const isWatched = (id: number) => (id in watch ? watch[id] : base.has(id));
 
   const set = (k: string, v: any) => setF((o) => ({ ...o, [k]: v }));
   const th = (k: string, label: string, n = true) => (
@@ -70,7 +66,7 @@ export default function Screener() {
         </div>
       </div>
 
-      <PicksPanel group={group} watched={isWatched} onWatch={(id, v) => setWatch((s) => ({ ...s, [id]: v }))} />
+      <PicksPanel group={group} />
 
       <h2 style={{ margin: "8px 0 10px" }}>完整排名與自訂篩選</h2>
 
@@ -158,8 +154,7 @@ export default function Screener() {
                       {r.score.risk_flags.length ? <Badge kind="warn" title={r.score.risk_flags.join("\n")}>{r.score.risk_flags.length}</Badge> : <span className="muted">—</span>}
                     </td>
                     <td>
-                      <WatchButton id={r.instrument_id} inList={isWatched(r.instrument_id)}
-                        onChange={(v) => setWatch((s) => ({ ...s, [r.instrument_id]: v }))} />
+                      <WatchButton id={r.instrument_id} />
                     </td>
                   </tr>
                 ))}

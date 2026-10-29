@@ -2,19 +2,23 @@ import { StrictMode, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, MemoryRouter, NavLink, Route, Routes } from "react-router-dom";
 import { api, IS_STATIC, type Meta } from "./api";
-import { DataDate, MetaCtx, SearchBox, ToastProvider } from "./components/ui";
+import { DataDate, MetaCtx, SearchBox, ToastProvider, WatchProvider } from "./components/ui";
 import Overview from "./pages/Overview";
 import Screener from "./pages/Screener";
 import InstrumentPage from "./pages/Instrument";
 import WatchlistPage from "./pages/Watchlist";
 import Backtest from "./pages/Backtest";
 import Health from "./pages/Health";
+import NextDay from "./pages/NextDay";
+import Sectors from "./pages/Sectors";
 import { dt } from "./format";
 import "./styles.css";
 
 const NAV = [
   ["/", "市場總覽"],
   ["/screener", "選股工作台"],
+  ["/nextday", "次日預測"],
+  ["/sectors", "類股表現"],
   ["/watchlist", "自選股"],
   ["/backtest", "回測與模型"],
   ["/health", "資料健康"],
@@ -42,7 +46,7 @@ function App() {
           </div>
           {NAV.map(([to, label], i) => (
             <NavLink key={to} to={to} end={to === "/"}>
-              <span className="idx">0{i + 1}</span>
+              <span className="idx">{String(i + 1).padStart(2, "0")}</span>
               {label}
             </NavLink>
           ))}
@@ -79,6 +83,8 @@ function App() {
             <Routes>
               <Route path="/" element={<Overview />} />
               <Route path="/screener" element={<Screener />} />
+              <Route path="/nextday" element={<NextDay />} />
+              <Route path="/sectors" element={<Sectors />} />
               <Route path="/instrument/:id" element={<InstrumentPage />} />
               <Route path="/watchlist" element={<WatchlistPage />} />
               <Route path="/backtest" element={<Backtest />} />
@@ -99,7 +105,9 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <Router>
       <ToastProvider>
-        <App />
+        <WatchProvider>
+          <App />
+        </WatchProvider>
       </ToastProvider>
     </Router>
   </StrictMode>,

@@ -27,7 +27,7 @@ from .store import finish_run, start_run, upsert
 log = logging.getLogger(__name__)
 MODEL_DIR = DATA_DIR / "models"
 MODEL_DIR.mkdir(exist_ok=True)
-HORIZONS = (20, 60)
+HORIZONS = (1, 20, 60)
 
 
 def _excluded(session: Session) -> dict[int, str]:
@@ -138,7 +138,8 @@ def _compute(session: Session, retrain: bool | None, run_backtest: bool | None) 
                 "instrument_id": int(iid), "as_of_date": as_of.date(), "generated_at": utcnow(),
                 "model_run_id": mr.id, "horizon_days": h, "target_definition": forecast.target_definition(h),
                 "expected_return": float(p.pred), "lower": float(p.lo), "upper": float(p.hi),
-                "prob_up": float(p.prob) if mr.prob_calibrated else None,
+                # 機率一律以校準後數值保存；是否顯示由 model_run.prob_calibrated 決定
+                "prob_up": float(p.prob),
                 "risk_flags": flags,
             })
         # 不覆寫既有預測：同鍵已存在則略過

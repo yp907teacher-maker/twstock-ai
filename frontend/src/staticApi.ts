@@ -15,25 +15,31 @@ const load = (path: string) => {
 const common = () => load("data/common.json");
 const inst = (id: number | string) => load(`data/inst/${id}.json`);
 
-// ---- 自選股（瀏覽器端）----
-type WL = Record<string, { note: string; added_at: string }>;
-let memWL: WL = {};
-const readWL = (): WL => {
+// ---- 自選股（瀏覽器端，多清單）----
+type Item = { note: string; added_at: string };
+type Store = { groups: { id: number; name: string }[]; items: Record<string, Record<string, Item>> };
+const KEY = "twstock-watchlists-v2";
+let mem: Store | null = null;
+const readStore = (): Store => {
   try {
-    const v = localStorage.getItem("twstock-demo-watchlist");
-    return v ? JSON.parse(v) : memWL;
+    const v = localStorage.getItem(KEY);
+    if (v) return JSON.parse(v);
+    const old = localStorage.getItem("twstock-demo-watchlist"); // 舊版單一清單
+    if (old) return { groups: [{ id: 1, name: "自選一" }], items: { "1": JSON.parse(old) } };
   } catch {
-    return memWL;
+    /* 無法使用 localStorage */
+  }
+  return mem ?? { groups: [{ id: 1, name: "自選一" }], items: { "1": {} } };
+};
+const writeStore = (st: Store) => {
+  mem = st;
+  try {
+    localStorage.setItem(KEY, JSON.stringify(st));
+  } catch {
+    /* 只保留在記憶體 */
   }
 };
-const writeWL = (w: WL) => {
-  memWL = w;
-  try {
-    localStorage.setItem("twstock-demo-watchlist", JSON.stringify(w));
-  } catch {
-    /* 無法儲存時只保留在記憶體 */
-  }
-};
+const groupId = (st: Store, g: string | null | undefined) => (g ? Number(g) : st.groups[0].id);
 
 const READONLY = "線上展示版為唯讀示範：此功能需在自己電腦執行完整版（含後端）才能使用";
 
@@ -87,12 +93,13 @@ function prices(rows: any[], days: number, adjusted: boolean) {
   return { adjusted, rows: out.slice(-days) };
 }
 
-async function watchlistRows() {
+async function watchlistRows(gid: number) {
   const c = await common();
-  const wl = readWL();
+  const st = readStore();
+  const g = st.groups.find((x) => x.id === gid) ?? st.groups[0];
   const all = [...c.screener.stock.rows, ...c.screener.etf.rows, ...c.screener.etf_leveraged.rows];
   const rows = [];
-  for (const [id, w] of Object.entries(wl)) {
+  for (const [id, w] of Object.entries(st.items[String(g.id)] ?? {})) {
     const d = (await inst(id)).detail;
     const sr = all.find((r: any) => r.instrument_id === Number(id));
     rows.push({
@@ -100,7 +107,7 @@ async function watchlistRows() {
       last_price: d.last_price ? { date: d.last_price.date, close: d.last_price.close } : null, quote: null,
     });
   }
-  return { as_of_date: c.meta.latest_score_date, rows };
+  return { as_of_date: c.meta.latest_score_date, group: g, rows };
 }
 
 export async function staticRequest(method: string, url: string, body?: any): Promise<any> {
@@ -113,11 +120,26 @@ export async function staticRequest(method: string, url: string, body?: any): Pr
     if (path === "/api/meta") return (await common()).meta;
     if (path === "/api/market/overview") return (await common()).overview;
     if (path === "/api/models") return (await common()).models;
+    if (path === "/api/nextday") {
+      const nd = (await common()).nextday?.[p.get("group") || "stock"];
+      if (!nd) return { model: null, rows: [], note: "尚無次日預測" };
+      let rows = nd.rows;
+      if (p.get("include_ineligible") !== "true") rows = rows.filter((r: any) => r.score?.eligible);
+      return { ...nd, rows, total_rows: rows.length };
+    }
+    if (path === "/api/sectors") return (await common()).sectors ?? { rows: [] };
     if (path === "/api/picks") return (await common()).picks[p.get("group") || "stock"];
     if (path === "/api/backtests") return (await common()).backtests;
     if (path === "/api/health") return (await common()).health;
     if (path === "/api/screener") return screener(await common(), p);
-    if (path === "/api/watchlist") return watchlistRows();
+    if (path === "/api/watchlist") return watchlistRows(groupId(readStore(), p.get("group")));
+    if (path === "/api/watchlists") {
+      const st = readStore();
+      return st.groups.map((g) => {
+        const ids = Object.keys(st.items[String(g.id)] ?? {}).map(Number);
+        return { ...g, count: ids.length, instrument_ids: ids };
+      });
+    }
     if (path === "/api/instruments/search") {
       const q = (p.get("q") || "").trim().toLowerCase();
       if (!q) return [];
@@ -130,8 +152,9 @@ export async function staticRequest(method: string, url: string, body?: any): Pr
     }
     if ((m = path.match(/^\/api\/instruments\/(\d+)$/))) {
       const d = (await inst(m[1])).detail;
-      const w = readWL()[m[1]];
-      return { ...d, watchlist: { in: !!w, note: w?.note ?? "" } };
+      const st = readStore();
+      const groups = st.groups.filter((g) => st.items[String(g.id)]?.[m![1]]).map((g) => g.id);
+      return { ...d, watchlist: { in: groups.length > 0, groups } };
     }
   }
   if ((m = path.match(/^\/api\/instruments\/(\d+)\/report$/)) && method === "POST") {
@@ -139,17 +162,46 @@ export async function staticRequest(method: string, url: string, body?: any): Pr
     if (!r) throw new Error("此標的尚無評分資料，無法產生報告");
     return r;
   }
+  if (path === "/api/watchlists" && method === "POST") {
+    const st = readStore();
+    const id = Math.max(0, ...st.groups.map((g) => g.id)) + 1;
+    const name = String(body?.name || `自選${st.groups.length + 1}`).slice(0, 32);
+    st.groups.push({ id, name });
+    st.items[String(id)] = {};
+    writeStore(st);
+    return { id, name, count: 0, instrument_ids: [] };
+  }
+  if ((m = path.match(/^\/api\/watchlists\/(\d+)$/))) {
+    const st = readStore();
+    const id = Number(m[1]);
+    if (method === "PATCH") {
+      const g = st.groups.find((x) => x.id === id);
+      if (g && body?.name) g.name = String(body.name).slice(0, 32);
+    } else if (method === "DELETE") {
+      if (st.groups.length <= 1) throw new Error("至少要保留一個自選清單");
+      st.groups = st.groups.filter((x) => x.id !== id);
+      delete st.items[String(id)];
+    }
+    writeStore(st);
+    return { ok: true };
+  }
   if (path === "/api/watchlist" && method === "POST") {
-    const w = readWL();
-    w[body.instrument_id] = { note: body.note ?? "", added_at: w[body.instrument_id]?.added_at ?? new Date().toISOString() };
-    writeWL(w);
+    const st = readStore();
+    const gid = String(body?.group_id ?? st.groups[0].id);
+    st.items[gid] = st.items[gid] ?? {};
+    const iid = String(body.instrument_id);
+    st.items[gid][iid] = { note: body.note || st.items[gid][iid]?.note || "", added_at: st.items[gid][iid]?.added_at ?? new Date().toISOString() };
+    writeStore(st);
     return { ok: true };
   }
   if ((m = path.match(/^\/api\/watchlist\/(\d+)$/))) {
-    const w = readWL();
-    if (method === "DELETE") delete w[m[1]];
-    if (method === "PATCH" && w[m[1]]) w[m[1]].note = body?.note ?? "";
-    writeWL(w);
+    const st = readStore();
+    const gid = String(groupId(st, p.get("group")));
+    const items = st.items[gid] ?? {};
+    if (method === "DELETE") delete items[m[1]];
+    if (method === "PATCH" && items[m[1]]) items[m[1]].note = body?.note ?? "";
+    st.items[gid] = items;
+    writeStore(st);
     return { ok: true };
   }
   throw new Error(READONLY);

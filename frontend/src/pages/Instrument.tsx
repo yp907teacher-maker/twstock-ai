@@ -92,7 +92,7 @@ function InstrumentPage({ id }: { id: string }) {
             <span className="value">{num(last_price?.close, 2)}</span>
             <span className="sub">收盤 {last_price?.date} · 來源 {last_price?.provider} · 抓取 {dt(last_price?.retrieved_at)}</span>
           </div>
-          <WatchButton id={inst.instrument_id} inList={d.data.watchlist.in} />
+          <WatchButton id={inst.instrument_id} />
           <button className="btn small" onClick={refreshQuote} disabled={quoteBusy || !meta?.fugle_enabled || meta?.demo_mode}
             title={meta?.fugle_enabled ? "以 Fugle 刷新盤中報價（不重新計算評分）" : "需設定 FUGLE_API_KEY"}>
             {quoteBusy ? "刷新中…" : "盤中刷新"}
@@ -167,7 +167,7 @@ function InstrumentPage({ id }: { id: string }) {
         {predictions.length === 0 ? (
           <div className="empty">尚無預測（可能因資料品質問題、歷史不足或模型尚未訓練）</div>
         ) : (
-          <div className="grid g2">
+          <div className="grid g3">
             {predictions.map((p: any) => <PredCard key={p.horizon_days} p={p} />)}
           </div>
         )}
@@ -263,7 +263,7 @@ function PredCard({ p }: { p: any }) {
   return (
     <div className="pred-card">
       <div className="card-head" style={{ marginBottom: 4 }}>
-        <h3>未來 {p.horizon_days} 個交易日</h3>
+        <h3>{p.horizon_days === 1 ? "次一交易日" : `未來 ${p.horizon_days} 個交易日`}</h3>
         <span className="spacer" />
         {p.model.beats_baseline ? <Badge kind="ok">樣本外優於基準</Badge> : <Badge kind="warn">未證實優於基準</Badge>}
       </div>

@@ -5,7 +5,7 @@ import { pct, updown } from "../format";
 
 const COMP_SHORT: Record<string, string> = { trend: "趨勢", fundamental: "基本面", liquidity: "流動性", flow: "籌碼", value_risk: "估值風險" };
 
-export default function PicksPanel({ group, watched, onWatch }: { group: string; watched: (id: number) => boolean; onWatch: (id: number, v: boolean) => void }) {
+export default function PicksPanel({ group }: { group: string }) {
   const { data, error, loading } = useApi<any>(`/api/picks?group=${group}`);
   const [showRules, setShowRules] = useState(false);
   if (error) return <ErrorBox error={error} />;
@@ -69,7 +69,7 @@ export default function PicksPanel({ group, watched, onWatch }: { group: string;
                   </span>
                 ) : <span className="muted small">無模型預測</span>}
                 <span className="spacer" />
-                <WatchButton id={p.instrument_id} inList={watched(p.instrument_id)} onChange={(v) => onWatch(p.instrument_id, v)} />
+                <WatchButton id={p.instrument_id} />
               </div>
             </div>
           ))}

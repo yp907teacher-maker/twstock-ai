@@ -39,6 +39,8 @@ MAX_ROWS = 600_000
 
 
 def target_definition(h: int) -> str:
+    if h == 1:
+        return "次一交易日含息報酬（今日收盤到下一交易日收盤，還原價）"
     return f"未來 {h} 個交易日含息總報酬（還原收盤價對還原收盤價）"
 
 
@@ -207,7 +209,12 @@ def evaluate(long_df: pd.DataFrame, h: int) -> dict:
     prob = pr["prob"].values
     brier = float(np.mean((prob - yb) ** 2))
     brier_base = float(np.mean((base_rate - yb) ** 2))
-    prob_m = {"brier": brier, "brier_baseline": brier_base, "ece": _ece(prob, yb), "base_rate": base_rate,
+    te["prob"] = prob
+    top = te[te.groupby("d")["prob"].rank(pct=True, ascending=False) <= 0.1]
+    top_hit = float((top[y] > 0).mean()) if len(top) else None
+    top_ret = float(top[y].mean()) if len(top) else None
+    prob_m = {"top_decile_hit": top_hit, "top_decile_mean_return": top_ret, "test_up_rate": float(yb.mean()),
+              "brier": brier, "brier_baseline": brier_base, "ece": _ece(prob, yb), "base_rate": base_rate,
               "n": int(len(yb)), "reliability": _reliability(prob, yb)}
     # 穩定性：分年、分組
     te["year"] = pd.to_datetime(te["d"]).dt.year

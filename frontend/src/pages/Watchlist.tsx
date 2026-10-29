@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
-import { Badge, CompBars, Disclaimer, ErrorBox, InstName, Loading, ScorePill, useApi, useMeta, useToast } from "../components/ui";
+import { Badge, CompBars, Disclaimer, ErrorBox, InstName, Loading, ScorePill, useApi, useMeta, useToast, useWatch } from "../components/ui";
 import { dt, num, updown } from "../format";
 
 type SortKey = "added" | "score" | "change" | "symbol";
@@ -9,7 +9,14 @@ type SortKey = "added" | "score" | "change" | "symbol";
 export default function WatchlistPage() {
   const { meta } = useMeta();
   const toast = useToast();
-  const { data, error, loading, reload } = useApi<any>("/api/watchlist");
+  const watch = useWatch();
+  const [gid, setGid] = useState<number | null>(null);
+  const current = watch.groups.find((g) => g.id === gid) ?? watch.groups[0];
+  const { data, error, loading, reload: reloadRows } = useApi<any>(current ? `/api/watchlist?group=${current.id}` : null, [watch.groups]);
+  const reload = () => { reloadRows(); watch.reload(); };
+  const [mode, setMode] = useState<null | "new" | "rename">(null);
+  const [nameInput, setNameInput] = useState("");
+  const [confirmDel, setConfirmDel] = useState(false);
   const [sort, setSort] = useState<SortKey>("added");
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState<Record<number, string>>({});
@@ -37,12 +44,12 @@ export default function WatchlistPage() {
     }
   };
   const saveNote = async (id: number) => {
-    await api.patch(`/api/watchlist/${id}`, { instrument_id: id, note: editing[id] ?? "" });
+    await api.patch(`/api/watchlist/${id}?group=${current!.id}`, { instrument_id: id, note: editing[id] ?? "" });
     setEditing((e) => { const n = { ...e }; delete n[id]; return n; });
     reload();
   };
   const remove = async (id: number) => {
-    await api.del(`/api/watchlist/${id}`);
+    await api.del(`/api/watchlist/${id}?group=${current!.id}`);
     toast("已移除");
     reload();
   };
@@ -66,9 +73,44 @@ export default function WatchlistPage() {
           </button>
         </div>
       </div>
+      <div className="group-tabs">
+        {watch.groups.map((g) => (
+          <button key={g.id} className={`group-tab ${current?.id === g.id ? "on" : ""}`} onClick={() => { setGid(g.id); setMode(null); setConfirmDel(false); }}>
+            {g.name}<span className="n">{g.count}</span>
+          </button>
+        ))}
+        {mode ? (
+          <form style={{ display: "inline-flex", gap: 4 }} onSubmit={async (e) => {
+            e.preventDefault();
+            if (mode === "new") {
+              const g = await watch.create(nameInput.trim() || `自選${["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"][watch.groups.length] ?? watch.groups.length + 1}`);
+              if (g) setGid(g.id);
+            } else if (current && nameInput.trim()) {
+              await watch.rename(current.id, nameInput.trim());
+            }
+            setMode(null); setNameInput("");
+          }}>
+            <input type="text" autoFocus placeholder={mode === "new" ? "新清單名稱，例如 存股" : "新名稱"} value={nameInput} onChange={(e) => setNameInput(e.target.value)} style={{ width: 170 }} />
+            <button className="btn small primary" type="submit">{mode === "new" ? "建立" : "改名"}</button>
+            <button className="btn small ghost" type="button" onClick={() => setMode(null)}>取消</button>
+          </form>
+        ) : (
+          <>
+            <button className="btn small" onClick={() => { setMode("new"); setNameInput(""); }}>＋ 新增清單</button>
+            {current && <button className="btn small ghost" onClick={() => { setMode("rename"); setNameInput(current.name); }}>改名</button>}
+            {current && watch.groups.length > 1 && (confirmDel ? (
+              <>
+                <span className="small down">確定刪除「{current.name}」？</span>
+                <button className="btn small" onClick={async () => { await watch.remove(current.id); setGid(null); setConfirmDel(false); }}>刪除</button>
+                <button className="btn small ghost" onClick={() => setConfirmDel(false)}>取消</button>
+              </>
+            ) : <button className="btn small ghost" onClick={() => setConfirmDel(true)}>刪除此清單</button>)}
+          </>
+        )}
+      </div>
       <div className="card">
         {rows.length === 0 ? (
-          <div className="empty">尚未加入自選股。可在 <Link to="/screener">選股工作台</Link> 或個股頁按「☆ 自選」。</div>
+          <div className="empty">「{current?.name}」還沒有股票。可在 <Link to="/screener">選股工作台</Link> 或個股頁按「☆ 自選」。</div>
         ) : (
           <div className="table-wrap">
             <table className="tbl">

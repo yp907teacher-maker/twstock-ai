@@ -72,13 +72,24 @@ def test_report_fallback_and_cache(client):
 
 
 def test_watchlist_crud(client):
+    groups = client.get("/api/watchlists").json()
+    assert groups[0]["name"] == "自選一"
+    g1 = groups[0]["id"]
     assert client.post("/api/watchlist", json={"instrument_id": 2, "note": "觀察"}).status_code == 200
-    rows = client.get("/api/watchlist").json()["rows"]
-    assert rows[0]["note"] == "觀察"
-    client.patch("/api/watchlist/2", json={"instrument_id": 2, "note": "改"})
-    assert client.get("/api/watchlist").json()["rows"][0]["note"] == "改"
-    client.delete("/api/watchlist/2")
-    assert client.get("/api/watchlist").json()["rows"] == []
+    g2 = client.post("/api/watchlists", json={"name": "存股"}).json()["id"]
+    client.post("/api/watchlist", json={"instrument_id": 3, "group_id": g2})
+    client.post("/api/watchlist", json={"instrument_id": 2, "group_id": g2})
+    assert [r["instrument_id"] for r in client.get(f"/api/watchlist?group={g1}").json()["rows"]] == [2]
+    assert sorted(r["instrument_id"] for r in client.get(f"/api/watchlist?group={g2}").json()["rows"]) == [2, 3]
+    assert sorted(client.get("/api/instruments/2").json()["watchlist"]["groups"]) == sorted([g1, g2])
+    client.patch(f"/api/watchlist/2?group={g1}", json={"instrument_id": 2, "note": "改"})
+    assert client.get(f"/api/watchlist?group={g1}").json()["rows"][0]["note"] == "改"
+    client.patch(f"/api/watchlists/{g2}", json={"name": "長期"})
+    assert [g["name"] for g in client.get("/api/watchlists").json()] == ["自選一", "長期"]
+    client.delete(f"/api/watchlist/2?group={g1}")
+    assert client.get(f"/api/watchlist?group={g1}").json()["rows"] == []
+    assert client.delete(f"/api/watchlists/{g2}").status_code == 200
+    assert client.delete(f"/api/watchlists/{g1}").status_code == 400  # 至少保留一個
 
 
 def test_backtest_and_export(client):

@@ -76,7 +76,7 @@ def build_payload(session: Session, iid: int) -> dict | None:
             if v is not None:
                 feats[label] = v
     preds = []
-    for h in (20, 60):
+    for h in (1, 20, 60):
         p = session.scalar(select(Prediction).where(Prediction.instrument_id == iid, Prediction.horizon_days == h)
                            .order_by(Prediction.as_of_date.desc(), Prediction.id.desc()).limit(1))
         if not p:
@@ -90,7 +90,7 @@ def build_payload(session: Session, iid: int) -> dict | None:
             "expected_return": f"{p.expected_return * 100:.1f}%" if p.expected_return is not None else None,
             "interval_80": [f"{p.lower * 100:.1f}%", f"{p.upper * 100:.1f}%"] if p.lower is not None else None,
             "interval_calibrated": mr.interval_calibrated,
-            "prob_up": f"{p.prob_up * 100:.0f}%" if p.prob_up is not None else None,
+            "prob_up": f"{p.prob_up * 100:.0f}%" if p.prob_up is not None and mr.prob_calibrated else None,
             "model": {"version": mr.model_version, "beats_baseline": mr.beats_baseline,
                       "test_rank_ic": round(test.get("rank_ic") or 0, 3),
                       "test_period": f"{mr.test_start} ~ {mr.test_end}"},

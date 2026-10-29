@@ -288,3 +288,23 @@ class MarketIndex(Base):
     change_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     provider: Mapped[str] = mapped_column(String(32))
     retrieved_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WatchGroup(Base):
+    """自選股清單（自選一、自選二…）。"""
+
+    __tablename__ = "watch_group"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(32))
+    sort: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WatchItem(Base):
+    __tablename__ = "watch_item"
+
+    group_id: Mapped[int] = mapped_column(ForeignKey("watch_group.id"), primary_key=True)
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.instrument_id"), primary_key=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

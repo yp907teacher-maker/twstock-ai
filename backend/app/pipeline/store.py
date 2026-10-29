@@ -333,7 +333,7 @@ def purge_unsupported(session: Session) -> int:
     from sqlalchemy import delete
 
     from ..models import (AIReport, BackfillState, CorporateAction, DataQualityIssue, FeatureSnapshot, Prediction, Quote,
-                          ScoreSnapshot, Watchlist)
+                          ScoreSnapshot, WatchItem, Watchlist)
 
     # 收盤價 ≤ 0 的紀錄（來源以 0 表示無成交）視為缺值
     session.execute(delete(DailyPrice).where(DailyPrice.close <= 0))
@@ -341,7 +341,7 @@ def purge_unsupported(session: Session) -> int:
     for k in range(0, len(bad), 500):
         part = bad[k:k + 500]
         for m in (DailyPrice, CorporateAction, Fundamental, Flow, FeatureSnapshot, ScoreSnapshot, Prediction,
-                  BackfillState, Watchlist, Quote, AIReport, DataQualityIssue):
+                  BackfillState, Watchlist, WatchItem, Quote, AIReport, DataQualityIssue):
             session.execute(delete(m).where(m.instrument_id.in_(part)))
         session.execute(delete(Instrument).where(Instrument.instrument_id.in_(part)))
     return len(bad)

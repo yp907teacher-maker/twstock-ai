@@ -132,25 +132,127 @@ export function InstName({ i, sub }: { i: Inst; sub?: ReactNode }) {
   );
 }
 
-export function WatchButton({ id, inList, onChange }: { id: number; inList: boolean; onChange?: (v: boolean) => void }) {
+// ---------------- 自選清單（自選一、自選二…）----------------
+export type WatchGroup = { id: number; name: string; count: number; instrument_ids: number[] };
+type WatchCtxT = {
+  groups: WatchGroup[];
+  groupsOf: (iid: number) => number[];
+  toggle: (iid: number, gid: number) => Promise<void>;
+  create: (name: string) => Promise<WatchGroup | null>;
+  rename: (gid: number, name: string) => Promise<void>;
+  remove: (gid: number) => Promise<void>;
+  reload: () => void;
+};
+const WatchCtx = createContext<WatchCtxT>({
+  groups: [], groupsOf: () => [], toggle: async () => {}, create: async () => null, rename: async () => {},
+  remove: async () => {}, reload: () => {},
+});
+export const useWatch = () => useContext(WatchCtx);
+
+export function WatchProvider({ children }: { children: ReactNode }) {
   const toast = useToast();
-  const [on, setOn] = useState(inList);
-  useEffect(() => setOn(inList), [inList]);
-  const toggle = async () => {
+  const [groups, setGroups] = useState<WatchGroup[]>([]);
+  const reload = useCallback(() => {
+    api.get<WatchGroup[]>("/api/watchlists").then(setGroups).catch(() => {});
+  }, []);
+  useEffect(reload, [reload]);
+  const groupsOf = (iid: number) => groups.filter((g) => g.instrument_ids.includes(iid)).map((g) => g.id);
+  const toggle = async (iid: number, gid: number) => {
+    // 剛建立的清單可能還不在 groups（尚未重新載入），視為空清單
+    const g = groups.find((x) => x.id === gid) ?? { id: gid, name: "新清單", count: 0, instrument_ids: [] as number[] };
+    const has = g.instrument_ids.includes(iid);
     try {
-      if (on) await api.del(`/api/watchlist/${id}`);
-      else await api.post("/api/watchlist", { instrument_id: id, note: "" });
-      setOn(!on);
-      onChange?.(!on);
-      toast(on ? "已移出自選股" : "已加入自選股");
+      if (has) await api.del(`/api/watchlist/${iid}?group=${gid}`);
+      else await api.post("/api/watchlist", { instrument_id: iid, note: "", group_id: gid });
+      toast(has ? `已移出「${g.name}」` : `已加入「${g.name}」`);
+      reload();
     } catch (e: any) {
       toast(e.message);
     }
   };
+  const create = async (name: string) => {
+    try {
+      const g = await api.post<WatchGroup>("/api/watchlists", { name });
+      reload();
+      return g;
+    } catch (e: any) {
+      toast(e.message);
+      return null;
+    }
+  };
+  const rename = async (gid: number, name: string) => {
+    await api.patch(`/api/watchlists/${gid}`, { name });
+    reload();
+  };
+  const remove = async (gid: number) => {
+    try {
+      await api.del(`/api/watchlists/${gid}`);
+      reload();
+    } catch (e: any) {
+      toast(e.message);
+    }
+  };
+  return <WatchCtx.Provider value={{ groups, groupsOf, toggle, create, rename, remove, reload }}>{children}</WatchCtx.Provider>;
+}
+
+export function WatchButton({ id }: { id: number; inList?: boolean; onChange?: (v: boolean) => void }) {
+  const { groups, groupsOf, toggle, create, reload } = useWatch();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  const mine = groupsOf(id);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [open]);
+  const quick = async () => {
+    // 只有一個清單時直接加入／移出，不必開選單
+    if (groups.length === 1) await toggle(id, groups[0].id);
+    else setOpen((v) => !v);
+  };
+  const label = mine.length === 0 ? "☆ 自選" : groups.length === 1 ? "★ 已自選" :
+    `★ ${groups.filter((g) => mine.includes(g.id)).map((g) => g.name).join("、")}`;
   return (
-    <button className="btn small" onClick={toggle} title={on ? "移出自選股" : "加入自選股"}>
-      {on ? "★ 已自選" : "☆ 自選"}
-    </button>
+    <div className="watch-wrap" ref={ref}>
+      <button className="btn small" onClick={quick} title="加入或移出自選清單" style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis" }}>
+        {label}
+      </button>
+      {groups.length === 1 && (
+        <button className="btn small ghost" title="選擇自選清單" onClick={() => setOpen((v) => !v)} style={{ padding: "3px 6px" }}>▾</button>
+      )}
+      {open && (
+        <div className="watch-pop">
+          <div className="small muted" style={{ marginBottom: 6 }}>加入到自選清單</div>
+          {groups.map((g) => (
+            <label key={g.id} className="check" style={{ display: "flex", padding: "3px 0" }}>
+              <input type="checkbox" checked={mine.includes(g.id)} onChange={() => toggle(id, g.id)} />
+              {g.name} <span className="muted small">（{g.count}）</span>
+            </label>
+          ))}
+          <form
+            style={{ display: "flex", gap: 4, marginTop: 8 }}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const g = await create(newName.trim() || `自選${["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"][groups.length] ?? groups.length + 1}`);
+              if (g) {
+                await api.post("/api/watchlist", { instrument_id: id, note: "", group_id: g.id });
+                toast(`已建立並加入「${g.name}」`);
+                reload();
+              }
+              setNewName("");
+            }}
+          >
+            <input type="text" placeholder="新清單名稱" value={newName} onChange={(e) => setNewName(e.target.value)} style={{ flex: 1, minWidth: 0 }} />
+            <button className="btn small" type="submit">新增</button>
+          </form>
+        </div>
+      )}
+    </div>
   );
 }
 

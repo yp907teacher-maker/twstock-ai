@@ -93,7 +93,7 @@ export default function Backtest() {
       <div className="card">
         <div className="card-head">
           <h2>預測模型</h2>
-          <div className="tabs">{[20, 60].map((x) => <button key={x} className={h === x ? "on" : ""} onClick={() => setH(x)}>{x} 交易日</button>)}</div>
+          <div className="tabs">{[1, 20, 60].map((x) => <button key={x} className={h === x ? "on" : ""} onClick={() => setH(x)}>{x === 1 ? "次日" : `${x} 交易日`}</button>)}</div>
           <span className="spacer" />
           {model && (
             <>
