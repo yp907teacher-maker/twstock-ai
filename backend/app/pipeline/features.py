@@ -63,6 +63,8 @@ def load_panel(session: Session, start: date | None = None) -> dict[str, pd.Data
         return {}
     df["d"] = pd.to_datetime(df["d"])
     df["f"] = df["f"].fillna(1.0)
+    for col in ["open", "high", "low", "close"]:
+        df.loc[df[col] <= 0, col] = np.nan
     df["adj"] = df["close"] * df["f"]
     df["adj_open"] = df["open"] * df["f"]
     panel = {}
@@ -230,6 +232,8 @@ def build_long(session: Session, panel: dict[str, pd.DataFrame], dates: list[pd.
     # ETF 不適用企業財務指標
     etf = base["asset_type"] == "ETF"
     base.loc[etf, ["rev_yoy", "rev_yoy_3m", "eps_ttm", "eps_growth", "gross_margin", "roe", "debt_ratio", "pe"]] = np.nan
+    num = base.select_dtypes(include=[np.number]).columns
+    base[num] = base[num].replace([np.inf, -np.inf], np.nan)
     return base.sort_values(["d", "iid"]).reset_index(drop=True)
 
 

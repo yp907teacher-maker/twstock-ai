@@ -155,7 +155,7 @@ def write_prices(session: Session, rows: list[dict], res: InstrumentResolver) ->
         iid = res.get(r["symbol"])
         if iid is None:
             iid = res.ensure(r["symbol"], r.get("name", ""), r.get("market", "TWSE"), r["provider"])
-        if iid is None or r.get("close") is None:
+        if iid is None or r.get("close") is None or r["close"] <= 0:
             continue  # 當日無成交：不寫入價格（不以 0 或前值填補）
         out.append({**r, "instrument_id": iid, "retrieved_at": now, "adjusted_flag": False})
     return upsert(session, DailyPrice, out, ["instrument_id", "trade_date"])
@@ -335,6 +335,8 @@ def purge_unsupported(session: Session) -> int:
     from ..models import (AIReport, BackfillState, CorporateAction, DataQualityIssue, FeatureSnapshot, Prediction, Quote,
                           ScoreSnapshot, Watchlist)
 
+    # 收盤價 ≤ 0 的紀錄（來源以 0 表示無成交）視為缺值
+    session.execute(delete(DailyPrice).where(DailyPrice.close <= 0))
     bad = [i.instrument_id for i in session.scalars(select(Instrument)) if not is_supported(i.symbol)]
     for k in range(0, len(bad), 500):
         part = bad[k:k + 500]

@@ -154,7 +154,7 @@ def evaluate(long_df: pd.DataFrame, h: int) -> dict:
     """完整驗證；回傳指標與判定，以及可直接用於最新預測的模型。"""
     y = f"fwd_{h}"
     data = prepare(long_df)
-    lab = data[data[y].notna()].copy()
+    lab = data[np.isfinite(data[y])].copy()
     if len(lab) > MAX_ROWS:
         lab = lab.sample(MAX_ROWS, random_state=0).sort_values("d")
     dates = np.array(sorted(lab["d"].unique()))
@@ -249,7 +249,7 @@ def evaluate(long_df: pd.DataFrame, h: int) -> dict:
 def fit_live(data: pd.DataFrame, h: int) -> Fitted:
     """以所有已有標籤的資料重新訓練（保留最近 15% 日期做校準），供最新一日預測。"""
     y = f"fwd_{h}"
-    lab = data[data[y].notna()]
+    lab = data[np.isfinite(data[y])]
     if len(lab) > MAX_ROWS:
         lab = lab.sample(MAX_ROWS, random_state=0)
     dates = np.array(sorted(lab["d"].unique()))
