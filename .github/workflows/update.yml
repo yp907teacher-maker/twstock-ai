@@ -66,6 +66,11 @@ jobs:
           fi
           python -m app.cli ci --max-requests "$MAX"
 
+      - name: 資料狀態摘要
+        if: always()
+        working-directory: backend
+        run: python ci_report.py || true
+
       - name: 儲存資料庫
         if: always()
         uses: actions/cache/save@v4
