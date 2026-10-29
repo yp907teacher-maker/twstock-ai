@@ -52,7 +52,7 @@ def test_groups_ranked_separately(client):
 
 def test_predictions_and_model_flags(client):
     models = client.get("/api/models").json()
-    assert {m["horizon_days"] for m in models} == {20, 60}
+    assert {m["horizon_days"] for m in models} == {1, 20, 60}
     for m in models:
         assert "model" in m["metrics"]["test"] and "momentum" in m["metrics"]["test"]
     det = client.get("/api/instruments/1").json()
@@ -130,3 +130,13 @@ def test_system_picks_follow_rules(client):
     for m in r["near_misses"]:
         assert m["rejected"]
     assert client.get("/api/picks?group=etf_leveraged").json()["picks"] == []
+
+
+def test_nextday_and_sectors(client):
+    nd = client.get("/api/nextday?group=stock").json()
+    assert nd["model"] and nd["rows"]
+    probs = [r["prob_up"] for r in nd["rows"]]
+    assert probs == sorted(probs, reverse=True) and all(0 <= p <= 1 for p in probs)
+    assert all(r["score"]["eligible"] for r in nd["rows"])
+    sec = client.get("/api/sectors").json()
+    assert sec["rows"] and all(r["count"] >= r["eligible"] for r in sec["rows"])
