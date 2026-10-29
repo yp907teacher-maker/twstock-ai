@@ -135,6 +135,9 @@ def sync_instruments_finmind(session: Session) -> dict:
 
 
 BACKFILL_DATASETS = ("prices", "actions", "revenue", "financials", "flows")
+# 首次回填後的補抓週期（天）：每日收盤價由官方 OpenAPI 更新，FinMind 只做低頻補漏，
+# 避免每天對全市場重複請求（免費版有每小時次數上限）。
+REFRESH_DAYS = {"prices": 30, "actions": 30, "revenue": 30, "financials": 45, "flows": 7}
 
 
 def backfill_finmind(session_factory, symbols: list[str] | None = None, datasets=BACKFILL_DATASETS,
@@ -175,6 +178,8 @@ def backfill_finmind(session_factory, symbols: list[str] | None = None, datasets
             with session_factory() as s:
                 st = s.get(BackfillState, (ds, iid))
                 begin = (st.done_until + timedelta(days=1)) if st and st.done_until else start
+                if st and st.done_until and st.done_until >= today - timedelta(days=REFRESH_DAYS.get(ds, 7)):
+                    continue
                 if begin > today:
                     continue
                 res = InstrumentResolver(s)
@@ -235,7 +240,8 @@ def backfill_remaining(session: Session, datasets=BACKFILL_DATASETS) -> int:
     today = date.today()
     insts = session.execute(select(Instrument.instrument_id, Instrument.asset_type)).all()
     done = {(d, i) for d, i, u in session.execute(select(BackfillState.dataset, BackfillState.instrument_id,
-                                                         BackfillState.done_until)) if u and u >= today - timedelta(days=7)}
+                                                         BackfillState.done_until))
+            if u and u >= today - timedelta(days=REFRESH_DAYS.get(d, 7))}
     n = 0
     for iid, at in insts:
         for ds in datasets:
