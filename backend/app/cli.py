@@ -54,6 +54,8 @@ def main(argv=None):
         res = jobs.run_job("compute", retrain=not args.no_retrain, backtest=not args.no_backtest)
     elif args.cmd == "ci":
         res = jobs.run_job("ci", max_requests=args.max_requests)
+        if "error" in res:
+            print(f"::error title=執行失敗::{res['error'][:800]}".replace("\n", " "))
         if "error" in res or res.get("compute", {}).get("status") == "no_data":
             print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
             return 1

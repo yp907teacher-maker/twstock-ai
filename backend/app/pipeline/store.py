@@ -17,6 +17,15 @@ from ..models import (
     utcnow,
 )
 
+# MVP 範圍：上市櫃普通股（4 位數字）與 ETF（00 開頭，可帶 L/R/B/A/K 等字尾）；
+# 排除權證、ETN、TDR、特別股、債券等。示範資料代號以 D 開頭。
+SUPPORTED_PAT = re.compile(r"^([1-9]\d{3}|00\d{2,4}[A-Z]?|D\d{4}|DE\d{3})$")
+
+
+def is_supported(symbol: str) -> bool:
+    return bool(SUPPORTED_PAT.match(symbol or ""))
+
+
 LEVERAGED_PAT = re.compile(r"(正2|正二|槓桿|2X|2x)")
 INVERSE_PAT = re.compile(r"(反1|反一|反向|-1X|-1x)")
 BOND_PAT = re.compile(r"(債|Bond|BOND)")
@@ -82,6 +91,8 @@ class InstrumentResolver:
         iid = self.cache.get(symbol)
         if iid:
             return iid
+        if not is_supported(symbol):
+            return None
         asset_type, etf_kind = classify(symbol, name, industry)
         inst = Instrument(
             symbol=symbol,
@@ -105,6 +116,8 @@ def upsert_instruments(session: Session, rows: list[dict], provider: str) -> int
     res = InstrumentResolver(session)
     n = 0
     for r in rows:
+        if not is_supported(r["symbol"]):
+            continue
         iid = res.get(r["symbol"])
         if iid:
             inst = session.get(Instrument, iid)
@@ -142,7 +155,7 @@ def write_prices(session: Session, rows: list[dict], res: InstrumentResolver) ->
         iid = res.get(r["symbol"])
         if iid is None:
             iid = res.ensure(r["symbol"], r.get("name", ""), r.get("market", "TWSE"), r["provider"])
-        if r.get("close") is None:
+        if iid is None or r.get("close") is None:
             continue  # 當日無成交：不寫入價格（不以 0 或前值填補）
         out.append({**r, "instrument_id": iid, "retrieved_at": now, "adjusted_flag": False})
     return upsert(session, DailyPrice, out, ["instrument_id", "trade_date"])
@@ -313,3 +326,20 @@ def finish_run(run: IngestRun, status: str, rows: int = 0, data_date: date | Non
     run.data_date = data_date
     run.message = (message or "")[:4000] or None
     run.finished_at = datetime.utcnow()
+
+
+def purge_unsupported(session: Session) -> int:
+    """移除不在 MVP 範圍的標的（權證、ETN、TDR、債券等）及其資料。"""
+    from sqlalchemy import delete
+
+    from ..models import (AIReport, BackfillState, CorporateAction, DataQualityIssue, FeatureSnapshot, Prediction, Quote,
+                          ScoreSnapshot, Watchlist)
+
+    bad = [i.instrument_id for i in session.scalars(select(Instrument)) if not is_supported(i.symbol)]
+    for k in range(0, len(bad), 500):
+        part = bad[k:k + 500]
+        for m in (DailyPrice, CorporateAction, Fundamental, Flow, FeatureSnapshot, ScoreSnapshot, Prediction,
+                  BackfillState, Watchlist, Quote, AIReport, DataQualityIssue):
+            session.execute(delete(m).where(m.instrument_id.in_(part)))
+        session.execute(delete(Instrument).where(Instrument.instrument_id.in_(part)))
+    return len(bad)

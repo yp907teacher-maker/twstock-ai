@@ -54,7 +54,10 @@ def _compute(session: Session, retrain: bool | None, run_backtest: bool | None) 
     panel = features.load_panel(session)
     if not panel:
         return {"status": "no_data"}
-    as_of = panel["adj"].index[-1]
+    # 評分日：最近一個「多數標的都有收盤價」的交易日（避免某來源只先更新少數標的時誤用）
+    counts = panel["close"].notna().sum(axis=1)
+    ref = counts.iloc[-15:].max()
+    as_of = counts[counts >= 0.6 * ref].index[-1]
     has_model = {h: session.scalar(select(ModelRun).where(ModelRun.horizon_days == h).order_by(ModelRun.id.desc()).limit(1))
                  for h in HORIZONS}
     if retrain is None:
@@ -63,7 +66,7 @@ def _compute(session: Session, retrain: bool | None, run_backtest: bool | None) 
         run_backtest = retrain or session.scalar(select(BacktestRun).limit(1)) is None
 
     full = retrain or run_backtest
-    dates = None if full else list(panel["adj"].index[-1:])
+    dates = None if full else [as_of]
     long_df = features.build_long(session, panel, dates=dates, horizons=HORIZONS if full else ())
     inactive = _inactive(session)
     day = long_df[(long_df["d"] == as_of) & (~long_df["iid"].isin(inactive))]

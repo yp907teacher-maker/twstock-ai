@@ -12,6 +12,7 @@ from ..models import BackfillState, DailyPrice, DataQualityIssue, Instrument, Ma
 from ..sources.base import RateLimitError, SourceError
 from . import quality
 from .store import (
+    is_supported,
     InstrumentResolver,
     finish_run,
     finmind_flows_to_rows,
@@ -83,6 +84,7 @@ def daily_official(session: Session) -> dict:
             issues = quality.check_price_batch(rows, dataset)
             bad = {(i["symbol"], i["trade_date"]) for i in issues if i["severity"] == "error"}
             good = [r for r in rows if (r["symbol"], r["trade_date"]) not in bad]
+            good = [r for r in good if is_supported(r["symbol"])]
             for r in good:
                 res.ensure(r["symbol"], r.get("name", ""), r["market"], src.provider)
             acts = infer_actions(session, good, res, src.provider)

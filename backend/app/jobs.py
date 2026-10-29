@@ -111,6 +111,10 @@ def job_ci(max_requests: int = 2000) -> dict:
     if n_inst < 100:
         with session_scope() as s:
             out["instruments"] = ingest.sync_instruments_finmind(s)
+    from .pipeline.store import purge_unsupported
+
+    with session_scope() as s:
+        out["purged"] = purge_unsupported(s)
     with session_scope() as s:
         out["official"] = ingest.daily_official(s)
     with session_scope() as s:
@@ -154,9 +158,13 @@ def run_job(name: str, **kwargs) -> dict:
                          "result": str(res)[:2000]}
         return res
     except Exception as exc:  # noqa: BLE001
+        import traceback
+
         log.exception("工作 %s 失敗", name)
-        STATE["last"] = {"job": name, "status": "failed", "finished_at": datetime.utcnow().isoformat(), "error": str(exc)}
-        return {"error": str(exc)}
+        tb = traceback.format_exc().strip().splitlines()
+        msg = f"{type(exc).__name__}: {exc} @ " + " | ".join(l.strip() for l in tb[-6:-1])
+        STATE["last"] = {"job": name, "status": "failed", "finished_at": datetime.utcnow().isoformat(), "error": msg}
+        return {"error": msg}
     finally:
         STATE.update(running=None, started_at=None)
         _lock.release()
