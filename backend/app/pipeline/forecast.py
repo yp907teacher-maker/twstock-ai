@@ -32,10 +32,10 @@ MODEL_FEATURES = [
     "eps_growth", "gross_margin", "roe", "debt_ratio", "pe", "foreign_20", "trust_20", "inst_persist",
     "margin_chg_20",
 ]
-PARAMS = {"max_iter": 200, "learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 200,
+PARAMS = {"max_iter": 150, "learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 200,
           "l2_regularization": 1.0, "random_state": 42}
 INTERVAL = 0.8
-MAX_ROWS = 600_000
+MAX_ROWS = 300_000
 
 
 def target_definition(h: int) -> str:
@@ -169,7 +169,7 @@ def evaluate(long_df: pd.DataFrame, h: int) -> dict:
 
     # ---- walk-forward（開發期）----
     folds = []
-    k = 4
+    k = 3
     fold_len = len(dev_dates) // (k + 2)
     for i in range(k):
         val = dev_dates[fold_len * (i + 2): fold_len * (i + 3)]

@@ -62,7 +62,7 @@ jobs:
         run: |
           MAX=${{ github.event.inputs.max_requests || '' }}
           if [ -z "$MAX" ]; then
-            if [ -n "$FINMIND_TOKEN" ]; then MAX=2000; else MAX=900; fi
+            if [ -n "$FINMIND_TOKEN" ]; then MAX=1200; else MAX=600; fi
           fi
           python -m app.cli ci --max-requests "$MAX"
 
