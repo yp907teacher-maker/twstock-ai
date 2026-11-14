@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -34,6 +35,7 @@ from ..models import (
     Prediction,
     Quote,
     ScoreSnapshot,
+    RelatedSnapshot,
     WatchGroup,
     WatchItem,
     Watchlist,
@@ -214,15 +216,17 @@ def picks(group: str = "stock", s: Session = Depends(db)):
 @app.get("/api/nextday")
 def nextday(group: str = "stock", include_ineligible: bool = False, limit: int = Query(50, le=5000),
             s: Session = Depends(db)):
-    mr = s.scalar(select(ModelRun).where(ModelRun.horizon_days == 1).order_by(ModelRun.id.desc()).limit(1))
+    as_of = s.scalar(select(func.max(Prediction.as_of_date)).where(Prediction.horizon_days == 1))
+    mr_id = s.scalar(select(Prediction.model_run_id).where(Prediction.horizon_days == 1, Prediction.as_of_date == as_of)
+                     .group_by(Prediction.model_run_id).order_by(func.count().desc()).limit(1)) if as_of else None
+    mr = s.get(ModelRun, mr_id) if mr_id else None
     if mr is None:
         return {"model": None, "rows": [], "note": "尚未訓練次日模型（需先有足夠歷史資料並執行重新計算）"}
-    as_of = s.scalar(select(func.max(Prediction.as_of_date)).where(Prediction.model_run_id == mr.id))
     q = (select(Prediction, Instrument, ScoreSnapshot)
          .join(Instrument, Instrument.instrument_id == Prediction.instrument_id)
          .outerjoin(ScoreSnapshot, and_(ScoreSnapshot.instrument_id == Prediction.instrument_id,
                                         ScoreSnapshot.as_of_date == Prediction.as_of_date))
-         .where(Prediction.model_run_id == mr.id, Prediction.as_of_date == as_of, Prediction.horizon_days == 1))
+         .where(Prediction.as_of_date == as_of, Prediction.horizon_days == 1))
     rows = []
     for p, inst, sc in s.execute(q).all():
         if inst.group != group:
@@ -297,6 +301,108 @@ def sectors(s: Session = Depends(db)):
     out.sort(key=lambda r: -(r["turnover"] or 0))
     return {"as_of_date": str(sd), "prev_date": str(prev) if prev else None, "rows": out,
             "note": "類股報酬為該產業普通股的等權平均（還原價）；產業分類來自 FinMind 主檔。"}
+
+
+# ------------------------------------------------------------------ recent trends
+def _related_names(s: Session, ids: list[int], score_date) -> dict[int, dict]:
+    if not ids:
+        return {}
+    out = {}
+    q = (select(Instrument, ScoreSnapshot, FeatureSnapshot)
+         .outerjoin(ScoreSnapshot, and_(ScoreSnapshot.instrument_id == Instrument.instrument_id,
+                                        ScoreSnapshot.as_of_date == score_date))
+         .outerjoin(FeatureSnapshot, and_(FeatureSnapshot.instrument_id == Instrument.instrument_id,
+                                          FeatureSnapshot.as_of_date == score_date))
+         .where(Instrument.instrument_id.in_(ids)))
+    for inst, sc, fs in s.execute(q).all():
+        v = fs.values if fs else {}
+        out[inst.instrument_id] = {"instrument_id": inst.instrument_id, "symbol": inst.symbol, "name": inst.name,
+                                   "industry": inst.industry, "total": sc.total if sc else None,
+                                   "ret_1": v.get("ret_1"), "ret_20": v.get("ret_20")}
+    return out
+
+
+@app.get("/api/trends")
+def trends(s: Session = Depends(db)):
+    sd = latest_score_date(s)
+    if sd is None:
+        return {"as_of_date": None, "sectors": [], "breakouts": [], "drops": []}
+    q = (select(Instrument, ScoreSnapshot, FeatureSnapshot)
+         .join(ScoreSnapshot, and_(ScoreSnapshot.instrument_id == Instrument.instrument_id, ScoreSnapshot.as_of_date == sd))
+         .join(FeatureSnapshot, and_(FeatureSnapshot.instrument_id == Instrument.instrument_id,
+                                     FeatureSnapshot.as_of_date == sd))
+         .where(Instrument.asset_type == "common_stock", Instrument.status == "active"))
+    rows = []
+    for inst, sc, fs in s.execute(q).all():
+        v = fs.values or {}
+        rows.append({"iid": inst.instrument_id, "symbol": inst.symbol, "name": inst.name, "industry": inst.industry or "其他",
+                     "eligible": sc.eligible, "total": sc.total, **{k: v.get(k) for k in
+                     ("ret_1", "ret_5", "ret_20", "vol_ratio", "vol_shock", "px_ma20", "px_high60", "turnover_20",
+                      "foreign_5", "mkt_ret_1", "mkt_ret_5", "mkt_ret_20", "mkt_breadth")}})
+    if not rows:
+        return {"as_of_date": str(sd), "sectors": [], "breakouts": [], "drops": []}
+    df = pd.DataFrame(rows)
+    mk = {k: (None if pd.isna(df[k].dropna().iloc[0]) else float(df[k].dropna().iloc[0])) if df[k].notna().any() else None
+          for k in ("mkt_ret_1", "mkt_ret_5", "mkt_ret_20", "mkt_breadth")}
+    rel = {r.instrument_id: [x["instrument_id"] for x in r.related[:3]] for r in s.scalars(select(RelatedSnapshot))}
+
+    def num(v):
+        return None if v is None or pd.isna(v) else float(v)
+
+    g = df.groupby("industry").agg(count=("iid", "size"), ret_1=("ret_1", "mean"), ret_5=("ret_5", "mean"),
+                                   ret_20=("ret_20", "mean"), vol_ratio=("vol_ratio", "median"),
+                                   breadth=("px_ma20", lambda x: float((x > 0).mean()) if x.notna().any() else np.nan),
+                                   new_high=("px_high60", lambda x: int((x >= -0.005).sum())),
+                                   turnover=("turnover_20", "sum"))
+    g = g[g["count"] >= 3]
+    if not g.empty:
+        heat = (0.4 * g["ret_5"].rank(pct=True) + 0.3 * g["ret_20"].rank(pct=True)
+                + 0.2 * g["vol_ratio"].rank(pct=True) + 0.1 * g["breadth"].rank(pct=True)) * 100
+        g["heat"] = heat
+        g["r5"] = g["ret_5"].rank(pct=True)
+        g["r20"] = g["ret_20"].rank(pct=True)
+    need_ids = set()
+    sectors = []
+    for ind, r in g.sort_values("heat", ascending=False).iterrows():
+        # 與其他類股相比：短線（5 日）與中線（20 日）都在前半 → 升溫；只有短線強 → 反彈；只有中線強 → 高檔整理
+        if r.r5 > 0.5 and r.r20 > 0.5:
+            status = "升溫"
+        elif r.r5 > 0.5:
+            status = "反彈"
+        elif r.r20 > 0.5:
+            status = "高檔整理"
+        else:
+            status = "轉弱"
+        mem = df[(df["industry"] == ind) & df["eligible"]].sort_values("ret_20", ascending=False).head(5)
+        leaders = []
+        for m in mem.itertuples():
+            ids = rel.get(m.iid, [])
+            need_ids |= set(ids)
+            leaders.append({"instrument_id": int(m.iid), "symbol": m.symbol, "name": m.name, "total": num(m.total),
+                            "ret_1": num(m.ret_1), "ret_5": num(m.ret_5), "ret_20": num(m.ret_20), "related_ids": ids})
+        sectors.append({"industry": ind, "status": status, "heat": num(r.heat), "count": int(r["count"]),
+                        "ret_1": num(r.ret_1), "ret_5": num(r.ret_5), "ret_20": num(r.ret_20),
+                        "vol_ratio": num(r.vol_ratio), "breadth": num(r.breadth), "new_high": int(r.new_high),
+                        "turnover": num(r.turnover), "leaders": leaders})
+
+    def pick(frame, n):
+        out = []
+        for m in frame.head(n).itertuples():
+            ids = rel.get(m.iid, [])
+            need_ids.update(ids)
+            out.append({"instrument_id": int(m.iid), "symbol": m.symbol, "name": m.name, "industry": m.industry,
+                        "total": num(m.total), "ret_1": num(m.ret_1), "ret_5": num(m.ret_5), "ret_20": num(m.ret_20),
+                        "vol_shock": num(m.vol_shock), "foreign_5": num(m.foreign_5), "related_ids": ids})
+        return out
+
+    el = df[df["eligible"]]
+    breakouts = pick(el[(el["px_high60"] >= -0.005) & (el["vol_shock"] >= 1.5)].sort_values("vol_shock", ascending=False), 30)
+    drops = pick(el[el["ret_5"] <= -0.08].sort_values("ret_5"), 20)
+    names = _related_names(s, list(need_ids), sd)
+    return {"as_of_date": str(sd), "market": mk, "sectors": sectors, "breakouts": breakouts, "drops": drops,
+            "names": {str(k): v for k, v in names.items()},
+            "note": "類股熱度 = 5 日報酬 40%、20 日報酬 30%、量能 20%、站上月線比例 10% 的產業間排名；相關公司依近 120 日"
+                    "扣除大盤後的日報酬相關性。這些是走勢統計，不代表產業消息或基本面關聯。"}
 
 
 # ------------------------------------------------------------------ search & screener
@@ -423,8 +529,14 @@ def instrument_detail(iid: int, s: Session = Depends(db)):
                           "baseline_rank_ic": tm.get("momentum", {}).get("rank_ic"),
                           "interval_coverage": (mr.metrics or {}).get("interval", {}).get("coverage")},
             })
-    past = s.scalars(select(Prediction).where(Prediction.instrument_id == iid, Prediction.actual_outcome.is_not(None))
-                     .order_by(Prediction.as_of_date.desc()).limit(20)).all()
+    past_all = s.scalars(select(Prediction).where(Prediction.instrument_id == iid, Prediction.actual_outcome.is_not(None))
+                         .order_by(Prediction.as_of_date.desc(), Prediction.horizon_days, Prediction.id).limit(200)).all()
+    seen, past = set(), []
+    for p in past_all:  # 每日每期間只顯示最早的一筆
+        if (p.as_of_date, p.horizon_days) not in seen:
+            seen.add((p.as_of_date, p.horizon_days))
+            past.append(p)
+    past = past[:20]
     last_px = s.scalar(select(DailyPrice).where(DailyPrice.instrument_id == iid).order_by(DailyPrice.trade_date.desc()).limit(1))
     rev = s.scalars(select(Fundamental).where(Fundamental.instrument_id == iid, Fundamental.metric_code == "revenue_month")
                     .order_by(Fundamental.period_end.desc()).limit(25)).all()
@@ -435,6 +547,19 @@ def instrument_detail(iid: int, s: Session = Depends(db)):
                        .order_by(DataQualityIssue.detected_at.desc()).limit(20)).all()
     ensure_groups(s)
     wl_groups = [gid for (gid,) in s.execute(select(WatchItem.group_id).where(WatchItem.instrument_id == iid))]
+    rs = s.get(RelatedSnapshot, iid)
+    sdate = sc.as_of_date if sc else latest_score_date(s)
+    rel_names = _related_names(s, [x["instrument_id"] for x in (rs.related if rs else [])], sdate)
+    related = [{**rel_names[x["instrument_id"]], "corr": x["corr"]} for x in (rs.related if rs else [])
+               if x["instrument_id"] in rel_names]
+    peers = []
+    if inst.industry and sdate:
+        for p_sc, p_inst in s.execute(select(ScoreSnapshot, Instrument).join(Instrument, Instrument.instrument_id == ScoreSnapshot.instrument_id)
+                                      .where(ScoreSnapshot.as_of_date == sdate, Instrument.industry == inst.industry,
+                                             Instrument.instrument_id != iid, ScoreSnapshot.eligible.is_(True))
+                                      .order_by(ScoreSnapshot.total.desc()).limit(6)).all():
+            peers.append({"instrument_id": p_inst.instrument_id, "symbol": p_inst.symbol, "name": p_inst.name,
+                          "total": p_sc.total, "rank": p_sc.rank})
     quote = s.get(Quote, iid)
     return {
         "instrument": inst_dict(inst),
@@ -458,6 +583,8 @@ def instrument_detail(iid: int, s: Session = Depends(db)):
         "quality_issues": [{"id": i.id, "code": i.issue_code, "severity": i.severity, "date": str(i.trade_date) if i.trade_date else None,
                             "details": i.details} for i in issues],
         "watchlist": {"in": bool(wl_groups), "groups": wl_groups},
+        "related": related,
+        "peers": peers,
         "quote": None if not quote else {"price": quote.price, "change": quote.change, "quote_time": _iso(quote.quote_time),
                                          "is_realtime": quote.is_realtime, "provider": quote.provider,
                                          "retrieved_at": _iso(quote.retrieved_at)},

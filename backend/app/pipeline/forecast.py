@@ -27,11 +27,12 @@ from ..config import FEATURE_VERSION
 log = logging.getLogger(__name__)
 
 MODEL_FEATURES = [
-    "ret_5", "ret_20", "ret_60", "ret_120", "px_ma20", "px_ma60", "ma20_slope", "rsi14", "vol_20", "vol_60",
-    "down_vol_60", "max_dd_120", "turnover_20", "turnover_cv20", "vol_ratio", "rev_yoy", "rev_yoy_3m",
-    "eps_growth", "gross_margin", "roe", "debt_ratio", "pe", "foreign_20", "trust_20", "inst_persist",
-    "margin_chg_20",
+    "ret_1", "range_1", "clv", "vol_shock", "px_high60", "ret_5", "ret_20", "ret_60", "ret_120", "px_ma20", "px_ma60",
+    "ma20_slope", "rsi14", "vol_20", "vol_60", "down_vol_60", "max_dd_120", "turnover_20", "turnover_cv20", "vol_ratio",
+    "rev_yoy", "rev_yoy_3m", "eps_growth", "gross_margin", "roe", "debt_ratio", "pe", "foreign_20", "trust_20",
+    "inst_persist", "margin_chg_20", "foreign_1", "trust_1", "foreign_5", "rel_ind_20", "rel_ind_5",
 ]
+MARKET_FEATURES = ["mkt_ret_1", "mkt_ret_5", "mkt_ret_20", "mkt_breadth"]
 PARAMS = {"max_iter": 150, "learning_rate": 0.05, "max_leaf_nodes": 31, "min_samples_leaf": 200,
           "l2_regularization": 1.0, "random_state": 42}
 INTERVAL = 0.8
@@ -49,6 +50,11 @@ def model_version(h: int) -> str:
     return f"hgb-h{h}-{FEATURE_VERSION}-{digest}"
 
 
+def step_for(h: int) -> int:
+    """取樣間隔（交易日）：次日模型需要更多日期，其他每 5 日取一次以控制記憶體與時間。"""
+    return 2 if h == 1 else 5
+
+
 def prepare(long_df: pd.DataFrame, step: int = 5) -> pd.DataFrame:
     dates = sorted(long_df["d"].unique())
     keep = set(dates[::-1][::step])  # 由最新日往回每 step 日取一次，確保最新日在內
@@ -57,13 +63,15 @@ def prepare(long_df: pd.DataFrame, step: int = 5) -> pd.DataFrame:
     ranks = df.groupby(["d", "group"])[feats].rank(pct=True)
     ranks.columns = [f"r_{c}" for c in feats]
     df = pd.concat([df, ranks], axis=1)
+    for c in MARKET_FEATURES:
+        df[f"m_{c}"] = df[c] if c in df.columns else np.nan
     df["g_etf"] = (df["group"] == "etf").astype(float)
     df["g_lev"] = (df["group"] == "etf_leveraged").astype(float)
     return df
 
 
 def xcols(df: pd.DataFrame) -> list[str]:
-    return [c for c in df.columns if c.startswith("r_")] + ["g_etf", "g_lev"]
+    return [c for c in df.columns if c.startswith("r_") or c.startswith("m_")] + ["g_etf", "g_lev"]
 
 
 def _rank_ic(d: pd.Series, y: pd.Series, p: pd.Series) -> tuple[float, float, int]:
@@ -155,14 +163,15 @@ class Fitted:
 def evaluate(long_df: pd.DataFrame, h: int) -> dict:
     """完整驗證；回傳指標與判定，以及可直接用於最新預測的模型。"""
     y = f"fwd_{h}"
-    data = prepare(long_df)
+    step = step_for(h)
+    data = prepare(long_df, step=step)
     lab = data[np.isfinite(data[y])].copy()
     if len(lab) > MAX_ROWS:
         lab = lab.sample(MAX_ROWS, random_state=0).sort_values("d")
     dates = np.array(sorted(lab["d"].unique()))
     if len(dates) < 60:
         return {"status": "insufficient_data", "reason": f"可用取樣日期僅 {len(dates)} 個，不足以驗證"}
-    gap = int(np.ceil(h / 5)) + 1  # embargo（以取樣日期計）
+    gap = int(np.ceil(h / step)) + 1  # embargo（以取樣日期計）
     n_test = int(len(dates) * 0.2)
     dev_dates, test_dates = dates[: -n_test], dates[-n_test:]
     dev_train_dates = dev_dates[:-gap]
@@ -260,7 +269,7 @@ def fit_live(data: pd.DataFrame, h: int) -> Fitted:
     if len(lab) > MAX_ROWS:
         lab = lab.sample(MAX_ROWS, random_state=0)
     dates = np.array(sorted(lab["d"].unique()))
-    gap = int(np.ceil(h / 5)) + 1
+    gap = int(np.ceil(h / step_for(h))) + 1
     cut = int(len(dates) * 0.85)
     tr = lab[lab["d"].isin(dates[: max(1, cut - gap)])]
     cal = lab[lab["d"].isin(dates[cut:])]

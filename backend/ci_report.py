@@ -26,3 +26,23 @@ with session_scope() as s:
                                                                          ScoreSnapshot.eligible.is_(True))) if sd else 0
     print(f"::notice title=資料庫摘要::標的 {n_inst} 檔；交易日 {days} 天；最新 {latest}（{n_latest} 檔有價）；"
           f"已回填股價 {bf} 檔；評分日 {sd}，合格 {elig} 檔")
+
+from app.models import ModelRun  # noqa: E402
+
+with session_scope() as s:
+    for h in (1, 20, 60):
+        m = s.scalar(select(ModelRun).where(ModelRun.horizon_days == h).order_by(ModelRun.id.desc()).limit(1))
+        if not m:
+            continue
+        t = (m.metrics or {}).get("test", {})
+        pm = (m.metrics or {}).get("probability", {})
+        md, mo = t.get("model", {}), t.get("momentum", {})
+
+        def f(v, pct=False):
+            return "—" if v is None else (f"{v * 100:.1f}%" if pct else f"{v:.3f}")
+        print(f"::notice title=模型 {h} 日::#{m.id} {m.model_version}；測試 {m.test_start}~{m.test_end}；"
+              f"Rank IC {f(md.get('rank_ic'))}（動能 {f(mo.get('rank_ic'))}，t={f(md.get('rank_ic_t'))}）；"
+              f"方向命中 {f(md.get('hit_rate'), True)}、平衡準確率 {f(md.get('balanced_acc'), True)}；"
+              f"信心前10%上漲比例 {f(pm.get('top_decile_hit'), True)}（全體 {f(pm.get('test_up_rate'), True)}）；"
+              f"Brier {f(pm.get('brier'))}/{f(pm.get('brier_baseline'))}、ECE {f(pm.get('ece'))}；"
+              f"優於基準={m.beats_baseline}、機率校準={m.prob_calibrated}")

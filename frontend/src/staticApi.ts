@@ -127,6 +127,7 @@ export async function staticRequest(method: string, url: string, body?: any): Pr
       if (p.get("include_ineligible") !== "true") rows = rows.filter((r: any) => r.score?.eligible);
       return { ...nd, rows, total_rows: rows.length };
     }
+    if (path === "/api/trends") return (await common()).trends ?? { as_of_date: null, sectors: [], breakouts: [], drops: [] };
     if (path === "/api/sectors") return (await common()).sectors ?? { rows: [] };
     if (path === "/api/picks") return (await common()).picks[p.get("group") || "stock"];
     if (path === "/api/backtests") return (await common()).backtests;

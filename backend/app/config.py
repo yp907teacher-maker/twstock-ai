@@ -75,6 +75,6 @@ class Settings:
 
 settings = Settings()
 
-FEATURE_VERSION = "feat-v1"
+FEATURE_VERSION = "feat-v2"
 SCORE_VERSION = "score-v1"
 PROMPT_VERSION = "report-v1"

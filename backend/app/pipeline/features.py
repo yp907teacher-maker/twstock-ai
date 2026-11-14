@@ -17,6 +17,11 @@ from ..config import FEATURE_VERSION
 from ..models import DailyPrice, Flow, Fundamental, Instrument
 
 FEATURE_LABELS = {
+    "ret_1": "今日報酬",
+    "range_1": "今日振幅",
+    "clv": "收盤在當日區間位置",
+    "vol_shock": "今日量／20 日均量",
+    "px_high60": "距 60 日高點",
     "ret_5": "5 日報酬",
     "ret_20": "20 日報酬",
     "ret_60": "60 日報酬",
@@ -44,8 +49,20 @@ FEATURE_LABELS = {
     "trust_20": "投信 20 日淨買超／均量",
     "inst_persist": "法人買超天數比例",
     "margin_chg_20": "融資餘額 20 日變化",
+    "foreign_1": "外資今日淨買超／均量",
+    "trust_1": "投信今日淨買超／均量",
+    "foreign_5": "外資 5 日淨買超／均量",
+    "rel_ind_20": "20 日報酬相對同產業",
+    "rel_ind_5": "5 日報酬相對同產業",
+    "mkt_ret_1": "大盤（等權）今日報酬",
+    "mkt_ret_5": "大盤（等權）5 日報酬",
+    "mkt_ret_20": "大盤（等權）20 日報酬",
+    "mkt_breadth": "大盤上漲家數比例",
 }
-PCT_FEATURES = {"ret_5", "ret_20", "ret_60", "ret_120", "px_ma20", "px_ma60", "ma20_slope", "vol_20", "vol_60",
+# 全市場共同特徵：同一天所有標的數值相同，模型使用原始值（不轉百分位）
+MARKET_FEATURES = ["mkt_ret_1", "mkt_ret_5", "mkt_ret_20", "mkt_breadth"]
+PCT_FEATURES = {"ret_1", "range_1", "px_high60", "rel_ind_20", "rel_ind_5", "mkt_ret_1", "mkt_ret_5",
+                "mkt_ret_20", "mkt_breadth", "ret_5", "ret_20", "ret_60", "ret_120", "px_ma20", "px_ma60", "ma20_slope", "vol_20", "vol_60",
                 "down_vol_60", "max_dd_120", "rev_yoy", "rev_yoy_3m", "eps_growth", "gross_margin", "roe",
                 "debt_ratio", "margin_chg_20", "inst_persist"}
 
@@ -86,6 +103,13 @@ def technical_features(panel: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame
     # 停牌日以前值計算報酬會低估波動，因此報酬只在有價日計算
     ret = adj.pct_change(fill_method=None)
     f = {}
+    f["ret_1"] = ret
+    prev_close = panel["close"].ffill().shift(1)
+    f["range_1"] = (panel["high"] - panel["low"]) / prev_close
+    rng = (panel["high"] - panel["low"]).replace(0, np.nan)
+    f["clv"] = (panel["close"] - panel["low"]) / rng
+    f["vol_shock"] = panel["volume"] / panel["volume"].rolling(20, min_periods=16).mean().shift(1)
+    f["px_high60"] = adj / adj.rolling(60, min_periods=40).max() - 1
     for n in (5, 20, 60, 120):
         f[f"ret_{n}"] = adj / adj.ffill().shift(n) - 1
     ma20 = adj.rolling(20, min_periods=16).mean()
@@ -124,6 +148,9 @@ def flow_features(session: Session, panel: dict[str, pd.DataFrame]) -> dict[str,
         "trust_20": w["trust"].rolling(20, min_periods=12).sum() / (avg_vol * 20),
         "inst_persist": ((w["foreign"].fillna(0) + w["trust"].fillna(0)) > 0).where(has).rolling(20, min_periods=12).mean(),
         "margin_chg_20": w["margin"] / w["margin"].shift(20) - 1,
+        "foreign_1": w["foreign"] / avg_vol,
+        "trust_1": w["trust"] / avg_vol,
+        "foreign_5": w["foreign"].rolling(5, min_periods=3).sum() / (avg_vol * 5),
     }
     return out
 
@@ -224,11 +251,22 @@ def build_long(session: Session, panel: dict[str, pd.DataFrame], dates: list[pd.
             base[col] = np.nan
     base["pe"] = np.where(base["eps_ttm"] > 0, base["close"] / base["eps_ttm"], np.nan)
 
-    inst = pd.DataFrame(session.execute(select(Instrument.instrument_id, Instrument.asset_type, Instrument.etf_kind)).all(),
-                        columns=["iid", "asset_type", "etf_kind"])
+    inst = pd.DataFrame(session.execute(select(Instrument.instrument_id, Instrument.asset_type, Instrument.etf_kind,
+                                               Instrument.industry)).all(),
+                        columns=["iid", "asset_type", "etf_kind", "industry"])
     base = base.merge(inst, on="iid", how="left")
     base["group"] = np.where(base["asset_type"] == "ETF",
                              np.where(base["etf_kind"].isin(["leveraged", "inverse"]), "etf_leveraged", "etf"), "stock")
+    # 大盤（普通股等權）與相對同產業
+    stk = base["group"] == "stock"
+    mkt = base[stk].groupby("d").agg(mkt_ret_1=("ret_1", "mean"), mkt_ret_5=("ret_5", "mean"),
+                                     mkt_ret_20=("ret_20", "mean"),
+                                     mkt_breadth=("ret_1", lambda x: float((x > 0).mean()) if x.notna().any() else np.nan))
+    base = base.merge(mkt, left_on="d", right_index=True, how="left")
+    for n in (5, 20):
+        ind_mean = base[stk].groupby(["d", "industry"])[f"ret_{n}"].transform("mean")
+        base[f"rel_ind_{n}"] = np.nan
+        base.loc[stk, f"rel_ind_{n}"] = base.loc[stk, f"ret_{n}"] - ind_mean
     # ETF 不適用企業財務指標
     etf = base["asset_type"] == "ETF"
     base.loc[etf, ["rev_yoy", "rev_yoy_3m", "eps_ttm", "eps_growth", "gross_margin", "roe", "debt_ratio", "pe"]] = np.nan

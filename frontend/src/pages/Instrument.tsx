@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { api } from "../api";
 import { FlowChart, PriceChart, RevenueChart } from "../components/charts";
 import {
@@ -9,10 +9,11 @@ import { dt, featureValue, num, pct, updown } from "../format";
 
 const RANGES: [string, number][] = [["3 個月", 63], ["6 個月", 126], ["1 年", 250], ["3 年", 750], ["10 年", 2500]];
 const FEATURE_GROUPS: [string, string[]][] = [
+  ["今日", ["ret_1", "range_1", "clv", "vol_shock", "px_high60", "rel_ind_5", "rel_ind_20"]],
   ["趨勢與動能", ["ret_5", "ret_20", "ret_60", "ret_120", "px_ma20", "px_ma60", "ma20_slope", "rsi14"]],
   ["風險與流動性", ["vol_20", "vol_60", "down_vol_60", "max_dd_120", "turnover_20", "turnover_cv20", "vol_ratio"]],
   ["基本面（依公告日）", ["rev_yoy", "rev_yoy_3m", "eps_ttm", "eps_growth", "gross_margin", "roe", "debt_ratio", "pe"]],
-  ["籌碼", ["foreign_20", "trust_20", "inst_persist", "margin_chg_20"]],
+  ["籌碼", ["foreign_1", "trust_1", "foreign_5", "foreign_20", "trust_20", "inst_persist", "margin_chg_20"]],
 ];
 
 export default function InstrumentRoute() {
@@ -202,6 +203,42 @@ function InstrumentPage({ id }: { id: string }) {
         </div>
         {!report ? <div className="muted">報告只引用資料庫中的評分、特徵與模型輸出；所有數字經過忠實度檢查。</div> : <Report r={report} />}
       </div>
+
+      {(d.data.related?.length > 0 || d.data.peers?.length > 0) && (
+        <div className="grid g2" style={{ marginBottom: 16 }}>
+          <div className="card">
+            <div className="card-head"><h2>相關公司</h2><span className="muted small">近 120 日扣除大盤後走勢最相近</span></div>
+            {d.data.related?.length ? (
+              <table className="tbl"><tbody>
+                {d.data.related.map((r: any) => (
+                  <tr key={r.instrument_id}>
+                    <td><Link to={`/instrument/${r.instrument_id}`}>{r.name}</Link> <span className="sym">{r.symbol}</span><div className="muted small">{r.industry}</div></td>
+                    <td className="n small muted">相關 {r.corr.toFixed(2)}</td>
+                    <td className={`n ${updown(r.ret_1)}`}>{pct(r.ret_1)}</td>
+                    <td className={`n ${updown(r.ret_20)}`}>20 日 {pct(r.ret_20)}</td>
+                    <td className="n"><ScorePill v={r.total} /></td>
+                  </tr>
+                ))}
+              </tbody></table>
+            ) : <div className="muted">歷史資料不足，暫無</div>}
+            <p className="muted small" style={{ marginBottom: 0 }}>相關係數越接近 1，日常漲跌越同步；這是走勢統計，不代表有業務往來。</p>
+          </div>
+          <div className="card">
+            <div className="card-head"><h2>同產業評分領先</h2><span className="muted small">{inst.industry}</span></div>
+            {d.data.peers?.length ? (
+              <table className="tbl"><tbody>
+                {d.data.peers.map((r: any) => (
+                  <tr key={r.instrument_id}>
+                    <td><Link to={`/instrument/${r.instrument_id}`}>{r.name}</Link> <span className="sym">{r.symbol}</span></td>
+                    <td className="n small muted">第 {r.rank} 名</td>
+                    <td className="n"><ScorePill v={r.total} /></td>
+                  </tr>
+                ))}
+              </tbody></table>
+            ) : <div className="muted">無</div>}
+          </div>
+        </div>
+      )}
 
       <div className="grid g2" style={{ marginBottom: 16 }}>
         <div className="card">

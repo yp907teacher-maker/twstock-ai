@@ -50,6 +50,7 @@ with TestClient(app) as c:
         "picks": {grp: g(f"/api/picks?group={grp}") for grp in ("stock", "etf", "etf_leveraged")},
         "nextday": {grp: g(f"/api/nextday?group={grp}&limit=5000&include_ineligible=true") for grp in ("stock", "etf", "etf_leveraged")},
         "sectors": g("/api/sectors"),
+        "trends": g("/api/trends"),
         "models": g("/api/models"),
         "backtests": g("/api/backtests"),
         "health": g("/api/health"),

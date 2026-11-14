@@ -11,6 +11,7 @@ import Backtest from "./pages/Backtest";
 import Health from "./pages/Health";
 import NextDay from "./pages/NextDay";
 import Sectors from "./pages/Sectors";
+import Trends from "./pages/Trends";
 import { dt } from "./format";
 import "./styles.css";
 
@@ -18,6 +19,7 @@ const NAV = [
   ["/", "市場總覽"],
   ["/screener", "選股工作台"],
   ["/nextday", "次日預測"],
+  ["/trends", "近期趨勢"],
   ["/sectors", "類股表現"],
   ["/watchlist", "自選股"],
   ["/backtest", "回測與模型"],
@@ -85,6 +87,7 @@ function App() {
               <Route path="/screener" element={<Screener />} />
               <Route path="/nextday" element={<NextDay />} />
               <Route path="/sectors" element={<Sectors />} />
+              <Route path="/trends" element={<Trends />} />
               <Route path="/instrument/:id" element={<InstrumentPage />} />
               <Route path="/watchlist" element={<WatchlistPage />} />
               <Route path="/backtest" element={<Backtest />} />

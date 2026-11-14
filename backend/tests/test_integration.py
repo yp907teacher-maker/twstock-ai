@@ -140,3 +140,21 @@ def test_nextday_and_sectors(client):
     assert all(r["score"]["eligible"] for r in nd["rows"])
     sec = client.get("/api/sectors").json()
     assert sec["rows"] and all(r["count"] >= r["eligible"] for r in sec["rows"])
+
+
+def test_trends_related_and_no_duplicate_predictions(client):
+    t = client.get("/api/trends").json()
+    assert t["sectors"] and {s["status"] for s in t["sectors"]} <= {"升溫", "反彈", "高檔整理", "轉弱"}
+    d = client.get("/api/instruments/7").json()
+    assert all(r["instrument_id"] != 7 and -1 <= r["corr"] <= 1 for r in d["related"])
+    # 同日重算不應產生第二筆預測
+    from app.db import session_scope
+    from app.models import Prediction
+    from app.pipeline import run
+
+    with session_scope() as s:
+        n0 = s.query(Prediction).count()
+    with session_scope() as s:
+        run.compute(s, retrain=False, run_backtest=False)
+    with session_scope() as s:
+        assert s.query(Prediction).count() == n0

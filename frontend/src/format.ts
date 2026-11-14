@@ -25,6 +25,7 @@ export const dt = (iso: string | null | undefined) => {
 };
 
 export const FEATURE_PCT = new Set([
+  "ret_1", "range_1", "px_high60", "rel_ind_5", "rel_ind_20", "mkt_ret_1", "mkt_ret_5", "mkt_ret_20", "mkt_breadth",
   "ret_5", "ret_20", "ret_60", "ret_120", "px_ma20", "px_ma60", "ma20_slope", "vol_20", "vol_60", "down_vol_60",
   "max_dd_120", "rev_yoy", "rev_yoy_3m", "eps_growth", "gross_margin", "roe", "debt_ratio", "margin_chg_20", "inst_persist",
 ]);
@@ -33,6 +34,6 @@ export const featureValue = (k: string, v: number | null | undefined) => {
   if (v === null || v === undefined) return "—";
   if (FEATURE_PCT.has(k)) return pct(v, 1, false);
   if (k === "turnover_20") return yi(v);
-  if (k === "foreign_20" || k === "trust_20") return v.toFixed(3);
+  if (["foreign_20", "trust_20", "foreign_1", "trust_1", "foreign_5"].includes(k)) return v.toFixed(3);
   return num(v, 2);
 };

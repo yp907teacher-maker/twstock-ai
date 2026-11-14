@@ -308,3 +308,13 @@ class WatchItem(Base):
     instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.instrument_id"), primary_key=True)
     note: Mapped[str] = mapped_column(Text, default="")
     added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class RelatedSnapshot(Base):
+    """相關公司：近 120 個交易日日報酬相關性最高的標的（每次計算覆蓋）。"""
+
+    __tablename__ = "related_snapshot"
+
+    instrument_id: Mapped[int] = mapped_column(ForeignKey("instrument.instrument_id"), primary_key=True)
+    as_of_date: Mapped[date] = mapped_column(Date)
+    related: Mapped[list] = mapped_column(JSON)  # [{"instrument_id", "corr"}]

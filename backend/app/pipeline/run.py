@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import DATA_DIR, settings
@@ -51,6 +51,9 @@ def compute(session: Session, retrain: bool | None = None, run_backtest: bool | 
 
 
 def _compute(session: Session, retrain: bool | None, run_backtest: bool | None) -> dict:
+    removed = dedupe_predictions(session)
+    if removed:
+        log.info("移除重複預測 %d 筆", removed)
     panel = features.load_panel(session)
     if not panel:
         return {"status": "no_data"}
@@ -61,7 +64,11 @@ def _compute(session: Session, retrain: bool | None, run_backtest: bool | None) 
     has_model = {h: session.scalar(select(ModelRun).where(ModelRun.horizon_days == h).order_by(ModelRun.id.desc()).limit(1))
                  for h in HORIZONS}
     if retrain is None:
-        retrain = as_of.weekday() == 4 or any(m is None for m in has_model.values())
+        from ..config import FEATURE_VERSION
+
+        # 週五、缺模型、或特徵版本改變（模型需用新特徵重訓）時重新訓練
+        retrain = (as_of.weekday() == 4 or any(m is None for m in has_model.values())
+                   or any(FEATURE_VERSION not in m.model_version for m in has_model.values() if m))
     if run_backtest is None:
         run_backtest = retrain or session.scalar(select(BacktestRun).limit(1)) is None
 
@@ -83,6 +90,12 @@ def _compute(session: Session, retrain: bool | None, run_backtest: bool | None) 
         rows.append(r)
     upsert(session, ScoreSnapshot, rows, ["instrument_id", "as_of_date", "score_version"])
     risk_by_iid = {r["instrument_id"]: r["risk_flags"] for r in rows}
+    from .related import compute_related
+
+    try:
+        compute_related(session, panel, as_of)
+    except Exception as exc:  # noqa: BLE001  相關公司失敗不影響評分與預測
+        log.warning("相關公司計算失敗：%s", exc)
     out = {"as_of": as_of.date(), "scored": len(rows), "eligible": int(sum(r["eligible"] for r in rows)),
            "retrained": bool(retrain), "backtest": bool(run_backtest)}
 
@@ -184,7 +197,26 @@ def _summary(out: dict) -> str:
     return "；".join(parts)
 
 
+def dedupe_predictions(session: Session) -> int:
+    """同一標的、同一資料日、同一期間只保留最早產生的一筆（同日重訓模型時會重複產生）。"""
+    from sqlalchemy import delete
+
+    keep = select(func.min(Prediction.id)).group_by(Prediction.instrument_id, Prediction.as_of_date,
+                                                    Prediction.horizon_days)
+    res = session.execute(delete(Prediction).where(Prediction.id.not_in(keep)))
+    return res.rowcount or 0
+
+
 def _insert_ignore(session: Session, rows: list[dict]):
+    if not rows:
+        return
+    # 每檔每日每期間只保留一筆預測：已存在者不再寫入（預測一經產生不覆寫）
+    keys = {(r["as_of_date"], r["horizon_days"]) for r in rows}
+    existing = set()
+    for d, h in keys:
+        existing |= {(iid, d, h) for (iid,) in session.execute(
+            select(Prediction.instrument_id).where(Prediction.as_of_date == d, Prediction.horizon_days == h))}
+    rows = [r for r in rows if (r["instrument_id"], r["as_of_date"], r["horizon_days"]) not in existing]
     if not rows:
         return
     dialect = session.get_bind().dialect.name
